@@ -1,5 +1,5 @@
 import { contentWords, lemmaCandidates, normalize, unsafeGenerated, violatesAvoid, wordCount } from '@vps-name-tools/core';
-import { containsTerm } from '@vps-name-tools/data';
+import { containsTerm, foldTerm } from '@vps-name-tools/data';
 import type { Context } from './context';
 import { isBlockedEngineWord } from './fill';
 import type { LengthOption } from './ids';
@@ -47,14 +47,27 @@ export function hasRepeatedRoot(title: string): boolean {
   return false;
 }
 
+/**
+ * The Include word counts only when the recipe holds an Include part and the rendered form (an inflected
+ * "Wolves" for "Wolf") appears in the title as a whole word or phrase. "Ash" is not satisfied by "Ashen".
+ * Hyphens and apostrophes fold to spaces on both sides, so "Aeternum's Oath" still contains "Aeternum".
+ */
+function includeSatisfied(recipe: Recipe, title: string): boolean {
+  const part = flattenParts(recipe.parts).find(p => p.kind === 'include');
+  if (!part) return false;
+  const needle = foldTerm(part.text);
+  return needle !== '' && ` ${foldTerm(title)} `.includes(` ${needle} `);
+}
+
 /** Returns a rejection reason, or undefined when the candidate is acceptable. */
 export function checkCandidate(ctx: Context, title: string, recipe: Recipe): string | undefined {
-  if (!title || title.length > MAX_TITLE_CHARS) return 'too-long';
+  if (!title) return 'empty';
+  if (title.length > MAX_TITLE_CHARS) return 'too-long';
   if (!lengthMatches(title, ctx.settings.length)) return 'length';
   if (ctx.style?.maxWords !== undefined && wordCount(title) > ctx.style.maxWords) return 'style-words';
   if (ctx.style?.maxChars !== undefined && title.length > ctx.style.maxChars) return 'style-chars';
   const key = normalize(title);
-  if (ctx.include && !key.includes(ctx.include.norm)) return 'include';
+  if (ctx.include && !includeSatisfied(recipe, title)) return 'include';
   if (violatesAvoid(title, morphemesOf(recipe.parts), ctx.avoid)) return 'avoid';
   const built = engineWords(recipe.parts);
   if (unsafeGenerated(title, built, ctx.data.safety)) return 'safety';

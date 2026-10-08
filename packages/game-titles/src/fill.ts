@@ -1,5 +1,5 @@
 import { coinWord, normalize, pickWeighted, pluralize, shuffle, unsafeGenerated, type Rng, type ThemePhrase } from '@vps-name-tools/core';
-import { containsTerm } from '@vps-name-tools/data';
+import { containsTerm, foldTerm } from '@vps-name-tools/data';
 import { slotForRole, type Choice, type Context, type LexSlot, type VocabSlot } from './context';
 import { parsePattern } from './pattern';
 import { joinCompound, renderRaw } from './render';
@@ -38,7 +38,12 @@ export function isBlockedEngineWord(ctx: Context, word: string, coined = false):
       if (coined && name.length >= 4 && letters.startsWith(name)) return true;
     }
   }
-  for (const t of ctx.game.franchiseTerms) if (containsTerm(n, t)) return true;
+  for (const t of ctx.game.franchiseTerms) {
+    if (containsTerm(n, t)) return true;
+    const name = foldTerm(t);
+    // An invented word must not begin with a single-word franchise name ("Jedimar" for "Jedi").
+    if (coined && !name.includes(' ') && name.replace(/[^a-z]/g, '').length >= 4 && letters.startsWith(name.replace(/[^a-z]/g, ''))) return true;
+  }
   for (const { preset } of ctx.genreChain) for (const s of preset.guard?.blockSuffixes ?? []) if (n.endsWith(s)) return true;
   return false;
 }
@@ -108,7 +113,8 @@ function compoundPart(ctx: Context, rng: Rng, index: number, slot: SlotType, tai
   for (let attempt = 0; attempt < 6; attempt++) {
     const head = pickChoice(ctx, rng, 'compoundHead', o);
     if (!head) return undefined;
-    const tail = pickChoice(ctx, rng, tailSlot, { ...o, used: new Set([...o.used, head.entry.id]) });
+    // The head filter and alliteration letter constrain the head only; the tail is free.
+    const tail = pickChoice(ctx, rng, tailSlot, { ...o, filter: undefined, letter: undefined, used: new Set([...o.used, head.entry.id]) });
     if (!tail) return undefined;
     const text = joinCompound(head.text, tail.text);
     if (isBlockedEngineWord(ctx, text)) continue;
@@ -128,6 +134,7 @@ function coinedPlacePart(ctx: Context, rng: Rng, index: number, o: SlotFill): Re
 
 function subtitlePart(ctx: Context, rng: Rng, index: number, o: SlotFill): RecipePart | undefined {
   const patterns = ctx.game.vocab.subtitlePatterns;
+  if (patterns.length === 0) return undefined;
   let parsed = subtitleCache.get(patterns);
   if (!parsed) {
     parsed = patterns.map(parsePattern);

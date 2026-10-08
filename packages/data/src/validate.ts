@@ -5,7 +5,7 @@ import type { DataBundle, Issue, LexEntry } from './types';
 export const RELEASE_TARGETS = { concepts: 250, aliases: 1000, lexicon: 1200, imageryPerPack: 40 } as const;
 
 /** Folds text and terms alike: normalised, apostrophes and hyphens become spaces, spaces collapse. */
-const foldTerm = (s: string) => normalize(s).replace(/['-]/g, ' ').replace(/\s+/g, ' ').trim();
+export const foldTerm = (s: string) => normalize(s).replace(/['-]/g, ' ').replace(/\s+/g, ' ').trim();
 
 /**
  * A multi-word term matches only as a whole-word phrase. A single-word term matches a whole token, or, when it has
