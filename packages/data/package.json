@@ -2,5 +2,6 @@
   "name": "@vps-name-tools/data",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts" }
+  "exports": { ".": "./src/index.ts", "./ids": "./src/ids.ts" },
+  "dependencies": { "@vps-name-tools/core": "*" }
 }
