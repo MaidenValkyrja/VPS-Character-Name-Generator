@@ -14,3 +14,5 @@ export * from './validate-game';
 export * from './context';
 export * from './render';
 export * from './fill';
+export * from './constraints';
+export * from './score';
