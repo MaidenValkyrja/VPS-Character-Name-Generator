@@ -7,18 +7,80 @@ export const RELEASE_TARGETS = { concepts: 250, aliases: 1000, lexicon: 1200, im
 /** Folds text and terms alike: normalised, apostrophes and hyphens become spaces, spaces collapse. */
 export const foldTerm = (s: string) => normalize(s).replace(/['-]/g, ' ').replace(/\s+/g, ' ').trim();
 
+interface Compiled {
+  readonly index: number;
+  /** The folded term. */
+  readonly t: string;
+  readonly phrase: boolean;
+  /** A single-word term of 5+ letters may also match the start of a token. */
+  readonly prefix: boolean;
+}
+
+function compileTerm(term: string, index: number): Compiled | undefined {
+  const t = foldTerm(term);
+  if (!t) return undefined;
+  return { index, t, phrase: t.includes(' '), prefix: t.replace(/[^a-z]/g, '').length >= 5 };
+}
+
 /**
  * A multi-word term matches only as a whole-word phrase. A single-word term matches a whole token, or, when it has
  * 5+ letters, the start of a token ("Freyjasgard" contains "freyja"). It never matches inside a token or across words
  * ("Shades" is not "hades", "Hall Ahead" is not "allah"). The engine adds its own prefix check for invented words (Task 14).
  */
 export function containsTerm(normText: string, term: string): boolean {
-  const t = foldTerm(term);
-  if (!t) return false;
+  const c = compileTerm(term, 0);
+  if (!c) return false;
   const text = foldTerm(normText);
-  if (t.includes(' ')) return ` ${text} `.includes(` ${t} `);
-  const prefixOk = t.replace(/[^a-z]/g, '').length >= 5;
-  return text.split(' ').some(tok => tok === t || (prefixOk && tok.startsWith(t)));
+  if (c.phrase) return ` ${text} `.includes(` ${c.t} `);
+  return text.split(' ').some(tok => tok === c.t || (c.prefix && tok.startsWith(c.t)));
+}
+
+/**
+ * Compiles a term list once. The returned function folds the text once and gives the first term, in list order,
+ * that `containsTerm` would match, or undefined. Lookups go through token indexes, so the cost does not grow with the list.
+ */
+export function termMatcher(terms: readonly string[]): (normText: string) => string | undefined {
+  const words = new Map<string, number>();
+  const prefixes = new Map<string, number>();
+  const prefixLengths = new Set<number>();
+  const phrases = new Map<string, { readonly padded: string; readonly index: number }[]>();
+  terms.forEach((term, index) => {
+    const c = compileTerm(term, index);
+    if (!c) return;
+    if (c.phrase) {
+      const first = c.t.slice(0, c.t.indexOf(' '));
+      const list = phrases.get(first) ?? [];
+      list.push({ padded: ` ${c.t} `, index });
+      phrases.set(first, list);
+      return;
+    }
+    if (!words.has(c.t)) words.set(c.t, index);
+    if (c.prefix && !prefixes.has(c.t)) {
+      prefixes.set(c.t, index);
+      prefixLengths.add(c.t.length);
+    }
+  });
+  if (words.size === 0 && phrases.size === 0) return () => undefined;
+  const lengths = [...prefixLengths].sort((a, b) => a - b);
+  return normText => {
+    const text = foldTerm(normText);
+    if (!text) return undefined;
+    const padded = ` ${text} `;
+    let best = -1;
+    const consider = (i: number | undefined) => {
+      if (i !== undefined && (best < 0 || i < best)) best = i;
+    };
+    for (const tok of text.split(' ')) {
+      consider(words.get(tok));
+      for (const len of lengths) {
+        if (len > tok.length) break;
+        consider(prefixes.get(tok.slice(0, len)));
+      }
+      const list = phrases.get(tok);
+      if (list) for (const ph of list) if (padded.includes(ph.padded)) consider(ph.index);
+    }
+    return best < 0 ? undefined : terms[best];
+  };
 }
 
 export function validateData(b: DataBundle, o: { release?: boolean; bannedTerms?: readonly string[] } = {}): Issue[] {

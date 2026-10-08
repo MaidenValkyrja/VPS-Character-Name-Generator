@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { normalize } from '@vps-name-tools/core';
-import { containsTerm } from '../src/index';
+import { createRng } from '@vps-name-tools/core';
+import { containsTerm, termMatcher } from '../src/index';
 
 /** The validator passes normalised entry text; the term is whatever the denylist or phrase list holds. */
 const has = (text: string, term: string) => containsTerm(normalize(text), term);
@@ -55,4 +56,54 @@ test('an empty term matches nothing', () => {
   assert.equal(has('Anything', ''), false);
   assert.equal(has('Anything', '   '), false);
   assert.equal(has('Anything', "'"), false);
+});
+
+const MATRIX_TERMS = [
+  'odin', 'thor', 'freyja', 'hyrule', 'blood and soil', 'sieg heil', "ra's", 'middle-earth', "philosopher's stone", 'Ægir', 'zelda', 'allah',
+];
+const MATRIX_TEXTS = [
+  'odin', 'the odin saga', "odin's hall", 'thornfall', 'thor', 'freyjasgard', 'hyrule field', 'shades', 'hall ahead',
+  'blood and soil keeper', 'blood and soiled', "ra's eye", 'middle earth saga', "philosopher's stone", 'aegir', 'moonzelda', 'zeldaria', '', 'sieg heil',
+];
+
+test('termMatcher agrees with containsTerm over a matrix of terms and texts', () => {
+  const match = termMatcher(MATRIX_TERMS);
+  for (const text of MATRIX_TEXTS) {
+    assert.equal(match(text) !== undefined, MATRIX_TERMS.some(t => containsTerm(text, t)), `text "${text}"`);
+  }
+});
+
+test('termMatcher returns the first matching term in list order', () => {
+  assert.equal(termMatcher(['hyrule', 'odin', 'freyja'])('odin in hyrule'), 'hyrule');
+  assert.equal(termMatcher(['freyja', 'odin'])('odin and freyjasgard'), 'freyja');
+  assert.equal(termMatcher(['blood and soil', 'blood'])('blood and soil'), 'blood and soil');
+  assert.equal(termMatcher(['odin'])('thorn'), undefined);
+});
+
+test('termMatcher ignores empty terms and handles an empty list or text', () => {
+  assert.equal(termMatcher([])('anything'), undefined);
+  assert.equal(termMatcher(['', '   ', "'"])('anything'), undefined);
+  assert.equal(termMatcher(['odin'])(''), undefined);
+});
+
+test('termMatcher agrees with containsTerm on generated terms and texts', () => {
+  const rng = createRng('term-equivalence');
+  const syllables = ['ra', 'ka', 'lo', 'ni', 'zel', 'da', 'hy', 'rule', 'od', 'in'];
+  const word = () => Array.from({ length: 1 + Math.floor(rng() * 3) }, () => syllables[Math.floor(rng() * syllables.length)]).join('');
+  const phrase = (max: number) => {
+    const sep = () => (rng() < 0.15 ? "'" : rng() < 0.15 ? '-' : ' ');
+    let out = word();
+    for (let i = Math.floor(rng() * max); i > 0; i--) out += sep() + word();
+    return out;
+  };
+  for (let round = 0; round < 60; round++) {
+    const terms = Array.from({ length: 8 }, () => phrase(2));
+    const match = termMatcher(terms);
+    for (let k = 0; k < 40; k++) {
+      // Often embed a term (or a stretched form of it) so phrase and prefix matches occur, not only misses.
+      const pick = terms[Math.floor(rng() * terms.length)];
+      const text = rng() < 0.5 ? phrase(4) : rng() < 0.5 ? `${phrase(1)} ${pick} ${phrase(1)}` : `${phrase(1)} ${pick}${word()}`;
+      assert.equal(match(text) !== undefined, terms.some(t => containsTerm(text, t)), `terms ${JSON.stringify(terms)} text "${text}"`);
+    }
+  }
 });

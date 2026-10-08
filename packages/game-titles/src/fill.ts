@@ -1,5 +1,5 @@
 import { coinWord, normalize, pickWeighted, pluralize, shuffle, unsafeGenerated, type Rng, type ThemePhrase } from '@vps-name-tools/core';
-import { containsTerm, foldTerm } from '@vps-name-tools/data';
+import { foldTerm, termMatcher } from '@vps-name-tools/data';
 import { slotForRole, type Choice, type Context, type LexSlot, type VocabSlot } from './context';
 import { parsePattern } from './pattern';
 import { joinCompound, renderRaw } from './render';
@@ -26,24 +26,56 @@ export interface SlotFill {
 const LEX_SLOTS = new Set<SlotType>(['noun', 'nounPl', 'adj', 'verb', 'abstract', 'placeWord']);
 const subtitleCache = new WeakMap<readonly string[], readonly (readonly PatternToken[])[]>();
 
+const matchers = new WeakMap<readonly string[], (normText: string) => string | undefined>();
+const prefixNameCache = { any: new WeakMap<readonly string[], readonly string[]>(), single: new WeakMap<readonly string[], readonly string[]>() };
+
+/**
+ * The compiled matcher for a term list, built once per list. The game data and the packs hold their lists for the
+ * whole session, so the lists are the cache keys; a list must not be edited after it has been matched against.
+ */
+export function matcherFor(terms: readonly string[]): (normText: string) => string | undefined {
+  let m = matchers.get(terms);
+  if (!m) {
+    m = termMatcher(terms);
+    matchers.set(terms, m);
+  }
+  return m;
+}
+
+/**
+ * Letters-only names of 4+ letters that an invented word must not start with. Denylist entries count in full
+ * ("the morrigan" folds to "themorrigan"); franchise terms count only when they are a single word.
+ */
+function prefixNames(terms: readonly string[], mode: 'any' | 'single'): readonly string[] {
+  const cache = prefixNameCache[mode];
+  let names = cache.get(terms);
+  if (!names) {
+    names = terms.flatMap(t => {
+      const folded = mode === 'single' ? foldTerm(t) : normalize(t);
+      if (mode === 'single' && folded.includes(' ')) return [];
+      const name = folded.replace(/[^a-z]/g, '');
+      return name.length >= 4 ? [name] : [];
+    });
+    cache.set(terms, names);
+  }
+  return names;
+}
+
+const startsWithAny = (letters: string, names: readonly string[]): boolean => names.some(name => letters.startsWith(name));
+
 export function isBlockedEngineWord(ctx: Context, word: string, coined = false): boolean {
   const n = normalize(word);
   if (unsafeGenerated(word, [word], ctx.data.safety)) return true;
   if (ctx.game.knownTitles.has(n)) return true;
-  const letters = n.replace(/[^a-z]/g, '');
+  const letters = coined ? n.replace(/[^a-z]/g, '') : '';
   for (const { pack } of ctx.mythChain) {
-    for (const d of pack.denylist) {
-      if (containsTerm(n, d)) return true;
-      const name = normalize(d).replace(/[^a-z]/g, '');
-      if (coined && name.length >= 4 && letters.startsWith(name)) return true;
-    }
+    if (matcherFor(pack.denylist)(n) !== undefined) return true;
+    if (coined && startsWithAny(letters, prefixNames(pack.denylist, 'any'))) return true;
   }
-  for (const t of ctx.game.franchiseTerms) {
-    if (containsTerm(n, t)) return true;
-    const name = foldTerm(t);
-    // An invented word must not begin with a single-word franchise name ("Jedimar" for "Jedi").
-    if (coined && !name.includes(' ') && name.replace(/[^a-z]/g, '').length >= 4 && letters.startsWith(name.replace(/[^a-z]/g, ''))) return true;
-  }
+  const franchise = ctx.game.franchiseTerms;
+  if (matcherFor(franchise)(n) !== undefined) return true;
+  // An invented word must not begin with a single-word franchise name ("Jedimar" for "Jedi").
+  if (coined && startsWithAny(letters, prefixNames(franchise, 'single'))) return true;
   for (const { preset } of ctx.genreChain) for (const s of preset.guard?.blockSuffixes ?? []) if (n.endsWith(s)) return true;
   return false;
 }

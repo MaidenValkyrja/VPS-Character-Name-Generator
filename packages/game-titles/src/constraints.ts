@@ -1,7 +1,7 @@
 import { contentWords, lemmaCandidates, normalize, unsafeGenerated, violatesAvoid, wordCount } from '@vps-name-tools/core';
-import { containsTerm, foldTerm } from '@vps-name-tools/data';
+import { foldTerm } from '@vps-name-tools/data';
 import type { Context } from './context';
-import { isBlockedEngineWord } from './fill';
+import { isBlockedEngineWord, matcherFor } from './fill';
 import type { LengthOption } from './ids';
 import { engineWords, flattenParts, morphemesOf } from './render';
 import type { Recipe } from './types';
@@ -75,10 +75,10 @@ export function checkCandidate(ctx: Context, title: string, recipe: Recipe): str
   const engineText = normalize(
     flattenParts(recipe.parts).filter(p => p.kind !== 'user' && p.kind !== 'include').map(p => p.text).join(' '),
   );
-  for (const t of ctx.game.franchiseTerms) if (containsTerm(engineText, t)) return 'franchise';
-  for (const { pack } of ctx.mythChain) for (const d of pack.denylist) if (containsTerm(engineText, d)) return 'denylist';
+  if (matcherFor(ctx.game.franchiseTerms)(engineText) !== undefined) return 'franchise';
+  for (const { pack } of ctx.mythChain) if (matcherFor(pack.denylist)(engineText) !== undefined) return 'denylist';
   for (const { preset } of ctx.genreChain) {
-    for (const p of preset.guard?.blockPhrases ?? []) if (containsTerm(engineText, p)) return 'genre-guard';
+    if (preset.guard?.blockPhrases && matcherFor(preset.guard.blockPhrases)(engineText) !== undefined) return 'genre-guard';
     for (const s of preset.guard?.blockSuffixes ?? []) if (built.some(w => normalize(w).endsWith(s))) return 'genre-guard';
   }
   for (const p of flattenParts(recipe.parts)) if (p.kind === 'coined' && isBlockedEngineWord(ctx, p.text, true)) return 'denylist';

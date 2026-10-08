@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRng } from '@vps-name-tools/core';
 import {
-  buildContext, normalizeSettings, fillTemplate, renderTitle, joinCompound, morphemesOf, isBlockedEngineWord, parsePattern, TEMPLATES, VOCAB,
+  buildContext, normalizeSettings, fillTemplate, renderTitle, joinCompound, morphemesOf, isBlockedEngineWord, matcherFor, parsePattern, TEMPLATES, VOCAB,
   type GameData, type RecipePart, type Settings, type Template,
 } from '../src/index';
 import { MINI } from '../../data/test/fixtures/mini-bundle';
@@ -120,4 +120,12 @@ test('a coined place exposes its place ending as a morpheme, an invented word do
   assert.deepEqual(morphemesOf([place]), ['Brenhold', 'hold']);
   const invented: RecipePart = { kind: 'coined', index: 0, slot: 'name', profile: 'neutral', syllables: ['bre', 'nar'], ending: 'ar', text: 'Brenar' };
   assert.deepEqual(morphemesOf([invented]), ['Brenar']);
+});
+
+test('term matchers are built once per list and match like containsTerm', () => {
+  const list = ['jedi', 'hyrule', 'blood and soil'];
+  assert.equal(matcherFor(list), matcherFor(list));
+  assert.notEqual(matcherFor(list), matcherFor([...list]));
+  assert.equal(matcherFor(list)('hyrule falls'), 'hyrule');
+  assert.equal(matcherFor(list)('thornfall'), undefined);
 });
