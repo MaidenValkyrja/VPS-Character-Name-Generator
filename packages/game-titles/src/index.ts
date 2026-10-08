@@ -18,4 +18,4 @@ export * from './constraints';
 export * from './score';
 export * from './notes';
 export * from './generate';
-export * from './similar';
+export { RELATED_FAMILIES, generateSimilar } from './similar';
