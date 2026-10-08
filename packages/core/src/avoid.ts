@@ -10,16 +10,25 @@ export interface AvoidRule {
 
 export const MAX_AVOID_RULES = 50;
 
+/** Normalised words, split on spaces and hyphens, with a trailing possessive removed from each. */
+function canonicalWords(text: string): string[] {
+  return normalize(text)
+    .split(/[\s-]+/)
+    .map(w => w.replace(/'s$|'$/, ''))
+    .filter(Boolean);
+}
+
 export function parseAvoid(text: string): AvoidRule[] {
   const rules: AvoidRule[] = [];
-  for (const raw of sanitizeInput(text, 500).split(/[,;\n]+/)) {
+  // Newlines become commas before sanitising, which would otherwise turn them into spaces.
+  for (const raw of sanitizeInput(text.replace(/[\r\n]+/g, ','), 500).split(/[,;]+/)) {
     const item = raw.trim();
     if (!item) continue;
     const quoted = item.length > 2 && /^["'].*["']$/.test(item);
     const core = quoted ? item.slice(1, -1) : item;
     const starts = /^[*-]/.test(core);
     const ends = /[*-]$/.test(core);
-    const value = normalize(core.replace(/^[*-]+|[*-]+$/g, ''));
+    const value = canonicalWords(core.replace(/^[*-]+|[*-]+$/g, '')).join(' ');
     if (!value) continue;
     let kind: AvoidKind;
     if (quoted || value.includes(' ')) kind = 'phrase';
@@ -35,14 +44,10 @@ export function parseAvoid(text: string): AvoidRule[] {
 
 export function violatesAvoid(title: string, morphemes: readonly string[], rules: readonly AvoidRule[]): AvoidRule | undefined {
   if (rules.length === 0) return undefined;
-  const norm = normalize(title);
-  const tokens = new Set<string>();
-  for (const t of norm.split(/[\s-]+/)) if (t) tokens.add(t);
-  for (const m of morphemes) {
-    const n = normalize(m);
-    if (n) tokens.add(n);
-  }
-  const spaced = ` ${norm.replace(/-/g, ' ')} `;
+  const words = canonicalWords(title);
+  const tokens = new Set<string>(words);
+  for (const m of morphemes) for (const w of canonicalWords(m)) tokens.add(w);
+  const spaced = ` ${words.join(' ')} `;
   for (const rule of rules) {
     switch (rule.kind) {
       case 'phrase':
@@ -50,8 +55,7 @@ export function violatesAvoid(title: string, morphemes: readonly string[], rules
         break;
       case 'word':
         for (const t of tokens) {
-          const bare = t.replace(/'s$/, '');
-          if (bare === rule.value || lemmaCandidates(bare).includes(rule.value)) return rule;
+          if (t === rule.value || lemmaCandidates(t).includes(rule.value)) return rule;
         }
         break;
       case 'prefix':

@@ -1,13 +1,15 @@
 const FOLD: Readonly<Record<string, string>> = {
   'æ': 'ae', 'Æ': 'Ae', 'œ': 'oe', 'Œ': 'Oe', 'ð': 'd', 'Ð': 'D', 'þ': 'th', 'Þ': 'Th',
   'ø': 'o', 'Ø': 'O', 'ß': 'ss', 'ł': 'l', 'Ł': 'L', 'đ': 'd', 'Đ': 'D', 'ı': 'i',
+  'ŋ': 'ng', 'Ŋ': 'Ng',
 };
 
+/** Decompose and drop combining marks first, so letters like ǿ reach the special-letter map as ø. */
 export function asciiFold(s: string): string {
   return s
-    .replace(/[æÆœŒðÐþÞøØßłŁđĐı]/g, ch => FOLD[ch] ?? ch)
     .normalize('NFKD')
-    .replace(/[̀-ͯ]/g, '');
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[æÆœŒðÐþÞøØßłŁđĐıŊŋ]/g, ch => FOLD[ch] ?? ch);
 }
 
 export function isAscii(s: string): boolean {

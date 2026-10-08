@@ -73,3 +73,14 @@ test('lemmaCandidates covers plurals, -ing, -ed and irregular forms', () => {
   assert.ok(lemmaCandidates('wolves').includes('wolf'));
   assert.ok(!lemmaCandidates('glass').includes('glas'));
 });
+
+test('asciiFold strips combining marks before folding special letters', () => {
+  // ǿ = o-stroke-acute, ǽ = ae-acute, ŋ = eng, Ŋ = Eng
+  assert.equal(asciiFold('dǿmr'), 'domr');
+  assert.equal(asciiFold('ǽ'), 'ae');
+  assert.equal(asciiFold('ŋ'), 'ng');
+  assert.equal(asciiFold('Ŋ'), 'Ng');
+  for (const s of ['dǿmr', 'ǽ', 'ŋ', 'Ŋ']) {
+    assert.equal(isAscii(asciiFold(s)), true, s);
+  }
+});

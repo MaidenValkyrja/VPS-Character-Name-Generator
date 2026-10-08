@@ -45,3 +45,28 @@ test('prefix, suffix, contains and phrase rules', () => {
 test('no rules never violates', () => {
   assert.equal(violatesAvoid('Anything', ['Anything'], []), undefined);
 });
+
+test('newlines separate rules like commas, including CRLF', () => {
+  assert.deepEqual(parseAvoid('frost\nglacier\r\nash'), [
+    { kind: 'word', value: 'frost' },
+    { kind: 'word', value: 'glacier' },
+    { kind: 'word', value: 'ash' },
+  ]);
+});
+
+test('hyphenated rule values become phrase rules and match hyphenated titles', () => {
+  assert.deepEqual(parseAvoid('wolf-winter'), [{ kind: 'phrase', value: 'wolf winter' }]);
+  assert.ok(violatesAvoid('Wolf-Winter', [], parseAvoid('wolf-winter')));
+  assert.ok(violatesAvoid('Wolf-Winter', [], parseAvoid('"wolf-winter"')));
+});
+
+test('possessive rule values are stripped and match the title word', () => {
+  assert.deepEqual(parseAvoid("Ysolde's"), [{ kind: 'word', value: 'ysolde' }]);
+  assert.ok(violatesAvoid("Ysolde's Lantern", [], parseAvoid("Ysolde's")));
+});
+
+test('possessive title words match plain word and affix rules', () => {
+  assert.ok(violatesAvoid("Ravens' Rest", [], parseAvoid('raven')));
+  assert.ok(violatesAvoid("Ravenheim's Gate", [], parseAvoid('*heim')));
+  assert.ok(violatesAvoid('Frostbound', [], parseAvoid('frost*')));
+});
