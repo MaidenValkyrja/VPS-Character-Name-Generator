@@ -27,8 +27,11 @@ export function selectDiverse<C extends Candidate>(candidates: readonly C[], opt
     if (!prev || c.score > prev.score) byKey.set(c.key, c);
   }
   const pool = [...byKey.values()].sort((a, b) => b.score - a.score);
+  // maxOverlap[i] is the highest Jaccard overlap between pool[i] and any pick so far.
+  // It only changes when a pick is made, so it is updated against the newest pick alone.
+  const maxOverlap = new Array<number>(pool.length).fill(0);
+  const used = new Array<boolean>(pool.length).fill(false);
   const picked: C[] = [];
-  const pickedKeys = new Set<string>();
   const familyCount = new Map<string, number>();
   const capCount = new Map<string, number>();
 
@@ -39,25 +42,28 @@ export function selectDiverse<C extends Candidate>(candidates: readonly C[], opt
   ];
   for (const pass of passes) {
     while (picked.length < opts.count) {
-      let best: C | undefined;
+      let best = -1;
       let bestValue = -Infinity;
-      for (const c of pool) {
-        if (pickedKeys.has(c.key)) continue;
+      for (let i = 0; i < pool.length; i++) {
+        if (used[i]) continue;
+        const c = pool[i];
         if (pass.families && (familyCount.get(c.family) ?? 0) >= opts.familyCap(c.family)) continue;
         if (pass.caps && c.capKeys.some(k => (capCount.get(k) ?? 0) >= opts.capLimit(k))) continue;
-        let overlap = 0;
-        for (const p of picked) overlap = Math.max(overlap, jaccard(c.features, p.features));
-        const value = c.score - opts.diversity * overlap;
+        const value = c.score - opts.diversity * maxOverlap[i];
         if (value > bestValue) {
           bestValue = value;
-          best = c;
+          best = i;
         }
       }
-      if (!best) break;
-      picked.push(best);
-      pickedKeys.add(best.key);
-      familyCount.set(best.family, (familyCount.get(best.family) ?? 0) + 1);
-      for (const k of best.capKeys) capCount.set(k, (capCount.get(k) ?? 0) + 1);
+      if (best < 0) break;
+      const chosen = pool[best];
+      used[best] = true;
+      picked.push(chosen);
+      familyCount.set(chosen.family, (familyCount.get(chosen.family) ?? 0) + 1);
+      for (const k of chosen.capKeys) capCount.set(k, (capCount.get(k) ?? 0) + 1);
+      for (let i = 0; i < pool.length; i++) {
+        if (!used[i]) maxOverlap[i] = Math.max(maxOverlap[i], jaccard(pool[i].features, chosen.features));
+      }
     }
     if (picked.length >= opts.count) break;
   }

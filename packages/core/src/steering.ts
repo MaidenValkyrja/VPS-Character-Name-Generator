@@ -103,8 +103,8 @@ export function parseThemes(text: string, index: SteeringIndex): ThemeProfile {
     const tokens = norm.split(' ').filter(t => t && !STOP.has(t));
     if (tokens.length > 1) {
       for (let i = 0; i < tokens.length - 1; i++) lookup(`${tokens[i]} ${tokens[i + 1]}`);
-      for (const t of tokens) lookup(t);
     }
+    for (const t of tokens) lookup(t);
 
     phrases.push({
       raw,

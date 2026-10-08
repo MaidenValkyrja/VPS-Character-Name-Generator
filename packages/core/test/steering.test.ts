@@ -72,3 +72,17 @@ test('empty input gives an empty profile', () => {
   assert.equal(p.phrases.length, 0);
   assert.equal(p.conceptBoosts.size, 0);
 });
+
+test('a stop word beside one content word still finds the entry', () => {
+  const p = parseThemes('the raven', index);
+  assert.equal(p.entryBoosts.get('raven'), STEER.namedEntry);
+  assert.equal(p.conceptBoosts.get('raven'), STEER.directConcept);
+  assert.equal(p.conceptBoosts.get('omen'), STEER.namedEntryConcept);
+  assert.equal(p.phrases[0].role, 'noun');
+});
+
+test('lots of ravens finds the raven entry through its plural', () => {
+  const p = parseThemes('lots of ravens', index);
+  assert.equal(p.entryBoosts.get('raven'), STEER.namedEntry);
+  assert.equal(p.phrases[0].role, 'noun');
+});
