@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-*/
+.astro/
+.wrangler/
+*.log
+docs/brand/capture/*.png
+lighthouse*.json
+.superpowers/

@@ -1,0 +1,6 @@
+{
+  "name": "@vps-name-tools/data",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" }
+}
