@@ -13,7 +13,8 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "tsx --test \"packages/*/test/**/*.test.ts\"",
     "validate:data": "tsx scripts/validate-data.ts",
-    "build:safety": "tsx scripts/build-safety.ts"
+    "build:safety": "tsx scripts/build-safety.ts",
+    "quality": "tsx scripts/quality.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

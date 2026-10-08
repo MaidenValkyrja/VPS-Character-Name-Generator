@@ -19,3 +19,4 @@ export * from './score';
 export * from './notes';
 export * from './generate';
 export { RELATED_FAMILIES, generateSimilar } from './similar';
+export * from './quality';
