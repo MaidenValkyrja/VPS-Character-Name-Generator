@@ -6,3 +6,4 @@ export * from './lemma';
 export * from './avoid';
 export * from './safety';
 export * from './steering';
+export * from './phonetics';
