@@ -4,3 +4,4 @@ export * from './weighted';
 export * from './text';
 export * from './lemma';
 export * from './avoid';
+export * from './safety';
