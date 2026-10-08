@@ -18,3 +18,4 @@ export * from './constraints';
 export * from './score';
 export * from './notes';
 export * from './generate';
+export * from './similar';
