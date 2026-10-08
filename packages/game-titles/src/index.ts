@@ -12,3 +12,5 @@ export * from './genres/index';
 export * from './game';
 export * from './validate-game';
 export * from './context';
+export * from './render';
+export * from './fill';
