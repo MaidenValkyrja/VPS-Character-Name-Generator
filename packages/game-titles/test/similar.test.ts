@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { generate, generateSimilar, RELATED_FAMILIES, titleKey, type RecipePart, type Settings, type TitleResult } from '../src/index';
-import { similarDetailed } from '../src/similar';
+import { createRng } from '@vps-name-tools/core';
+import {
+  buildContext, generate, generateSimilar, normalizeSettings, RELATED_FAMILIES, titleKey, toCandidate, type RecipePart, type Settings, type TitleResult,
+} from '../src/index';
+import { exemptKeptHead, keptHeadOf, similarDetailed } from '../src/similar';
 import { MINI } from '../../data/test/fixtures/mini-bundle';
 import { MINI_GAME } from './fixtures/mini-game';
 
@@ -230,4 +233,38 @@ test('an invented-word source is served by mutation and structure', () => {
     const counts = tally(result.titles);
     assert.ok((counts.get('mutate') ?? 0) >= 1 && (counts.get('structure') ?? 0) >= 1, [...counts].join());
   }
+});
+
+// Fix round 1 (Task 16): batch caps are keyed on lexicon entries, so Similar exempts the kept head by entry.
+
+test('the kept head is not charged against the entry-level word and head caps', () => {
+  const ctx = buildContext(normalizeSettings({ count: 10 }), MINI, MINI_GAME, createRng('kept'));
+  const capsOf = (t: TitleResult) => toCandidate(ctx, t.title, t.recipe, 0);
+  // A lexicon head: both of its entry keys go, every other key stays.
+  const lex = lexSources[0];
+  const lexHead = headPart(lex)!;
+  assert.ok(lexHead.kind === 'lex');
+  const before = capsOf(lex);
+  const after = exemptKeptHead(before, keptHeadOf(lexHead as Exclude<RecipePart, { kind: 'literal' }>));
+  assert.ok(before.capKeys.includes(`head:@${(lexHead as Extract<RecipePart, { kind: 'lex' }>).entryId}`));
+  assert.deepEqual(before.capKeys.filter(k => !after.capKeys.includes(k)).sort(), [`head:@${(lexHead as Extract<RecipePart, { kind: 'lex' }>).entryId}`, `word:@${(lexHead as Extract<RecipePart, { kind: 'lex' }>).entryId}`].sort());
+  // A different head word keeps its keys.
+  const other = lexSources.find(t => headPart(t)?.kind === 'lex' && (headPart(t) as Extract<RecipePart, { kind: 'lex' }>).entryId !== (lexHead as Extract<RecipePart, { kind: 'lex' }>).entryId)!;
+  assert.deepEqual(exemptKeptHead(capsOf(other), keptHeadOf(lexHead as Exclude<RecipePart, { kind: 'literal' }>)).capKeys, capsOf(other).capKeys);
+  // A compound head: the head entry and both halves go.
+  const compound = ['c1', 'c2', 'c3'].flatMap(seed => run({ count: 20 }, seed).titles).find(t => headPart(t)?.kind === 'compound')!;
+  assert.ok(compound, 'a compound-head source');
+  const c = headPart(compound) as Extract<RecipePart, { kind: 'compound' }>;
+  const cAfter = exemptKeptHead(capsOf(compound), keptHeadOf(c));
+  assert.deepEqual(capsOf(compound).capKeys.filter(k => !cAfter.capKeys.includes(k)).sort(), [`head:@${c.headId}`, `word:@${c.headId}`, `word:@${c.tailId}`].sort());
+});
+
+test('the kept head entry is exempt in another surface form, such as its plural', () => {
+  const ctx = buildContext(normalizeSettings({ count: 10 }), MINI, MINI_GAME, createRng('kept2'));
+  const src = lexSources[0];
+  const head = headPart(src) as Extract<RecipePart, { kind: 'lex' }>;
+  const plural = { ...src.recipe, parts: src.recipe.parts.map(p => (p === head ? { ...head, slot: 'nounPl' as const, text: `${head.text}s` } : p)) };
+  const kept = exemptKeptHead(toCandidate(ctx, `${src.title}s`, plural, 0), keptHeadOf(head));
+  assert.ok(!kept.capKeys.includes(`head:@${head.entryId}`));
+  assert.ok(!kept.capKeys.includes(`word:@${head.entryId}`));
 });

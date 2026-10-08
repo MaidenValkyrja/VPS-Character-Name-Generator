@@ -5,6 +5,8 @@ export interface NoteInput {
   readonly myth?: string;
   readonly genre: string;
   readonly concepts: readonly string[];
+  /** The title is an invented word. The profile names its sound when there is one worth naming. */
+  readonly invented?: boolean;
   readonly inventedProfile?: string;
   readonly variant: number;
 }
@@ -16,9 +18,12 @@ const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 export function buildNote(i: NoteInput): string {
   const tone = i.tone || 'evocative';
-  if (i.inventedProfile) {
-    const full = `Invented word with ${indefiniteArticle(i.inventedProfile)} ${i.inventedProfile}-inspired sound; suits ${indefiniteArticle(tone)} ${tone} ${i.genre} game.`;
-    return full.length <= MAX_NOTE_CHARS ? full : `Invented word; suits ${indefiniteArticle(tone)} ${tone} ${i.genre} game.`;
+  if (i.invented || i.inventedProfile) {
+    const suits = `suits ${indefiniteArticle(tone)} ${tone} ${i.genre} game.`;
+    const full = i.inventedProfile
+      ? `Invented word with ${indefiniteArticle(i.inventedProfile)} ${i.inventedProfile}-inspired sound; ${suits}`
+      : `An invented word; ${suits}`;
+    return (full.length <= MAX_NOTE_CHARS ? full : `Invented word; ${suits}`).slice(0, MAX_NOTE_CHARS);
   }
   const attempts: string[] = [];
   for (const myth of i.myth ? [i.myth, undefined] : [undefined]) {

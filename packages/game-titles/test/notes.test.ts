@@ -28,3 +28,17 @@ test('notes never exceed the limit', () => {
   const note = buildNote({ tone: 'melancholic', myth: 'Indian mythology-inspired', genre: 'psychological-horror', concepts: long, variant: 0 });
   assert.ok(note.length <= MAX_NOTE_CHARS, note);
 });
+
+test('a neutral invented word has no sound claim', () => {
+  const note = buildNote({ tone: 'grim', genre: 'survival', concepts: [], invented: true, variant: 0 });
+  assert.equal(note, 'An invented word; suits a grim survival game.');
+  assert.doesNotMatch(note, /inspired/);
+});
+
+test('the invented-word fallback is clamped to the limit', () => {
+  const genre = 'g'.repeat(120);
+  for (const inventedProfile of [undefined, 'Norse']) {
+    const note = buildNote({ tone: 'grim', genre, concepts: [], invented: true, inventedProfile, variant: 0 });
+    assert.ok(note.length <= MAX_NOTE_CHARS, note);
+  }
+});

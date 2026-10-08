@@ -34,6 +34,7 @@ export function selectionOptions(ctx: Context, count: number): SelectOptions {
       if (k.startsWith('cliche:')) return 1;
       if (k === 'cliche-any') return atLeastOne(count * 0.2);
       if (k.startsWith('phrase:')) return phrases > 1 ? atLeastOne(count * 0.3) : count;
+      if (k === 'literal') return Math.max(1, Math.round(count * ctx.params.literalRate));
       if (k === 'coined') return Math.max(1, Math.ceil(count * ctx.coinedCap));
       if (k === 'symbolic') return 2;
       return Infinity;
@@ -41,25 +42,60 @@ export function selectionOptions(ctx: Context, count: number): SelectOptions {
   };
 }
 
+/**
+ * Cap keys for the batch selector. Lexicon words are keyed by entry, so "Crown", "Crowns", "Crownhold" and
+ * "Starcrown" all count against the one crown entry; invented words, frames and fixed pattern words are keyed by text.
+ * The Include word and the user's own theme phrases are exempt from the word and head caps.
+ */
 export function toCandidate(ctx: Context, title: string, recipe: Recipe, score: number, extraCaps: readonly string[] = []): TitleCandidate {
   const words = contentWords(title);
-  const includeWords = new Set(ctx.include ? contentWords(ctx.include.text) : []);
   const caps = new Set<string>(extraCaps);
-  for (const w of words) if (!includeWords.has(w)) caps.add(`word:${w}`);
-  const head = recipe.parts.find(p => p.kind !== 'literal' && p.index === recipe.headSlot);
-  if (head && head.kind !== 'include') caps.add(`head:${normalize(head.text)}`);
+  const wordKeys = (text: string) => {
+    for (const w of contentWords(text)) caps.add(`word:${w}`);
+  };
   for (const p of flattenParts(recipe.parts)) {
-    if (p.kind === 'vocab' && p.cliche >= CLASSIC) {
-      caps.add(`cliche:${normalize(p.text)}`);
-      caps.add('cliche-any');
+    switch (p.kind) {
+      case 'literal':
+        wordKeys(p.text);
+        break;
+      case 'lex': {
+        caps.add(`word:@${p.entryId}`);
+        const e = ctx.entryById.get(p.entryId);
+        if (e && (e.cliche ?? 0) >= CLASSIC && !ctx.liftedCliches.has(normalize(e.text))) caps.add('cliche-any');
+        if (ctx.symbolicIds.has(p.entryId)) caps.add('symbolic');
+        break;
+      }
+      case 'compound':
+        caps.add(`word:@${p.headId}`);
+        caps.add(`word:@${p.tailId}`);
+        break;
+      case 'vocab':
+        wordKeys(p.text);
+        if (p.cliche >= CLASSIC) {
+          caps.add(`cliche:${normalize(p.text)}`);
+          caps.add('cliche-any');
+        }
+        break;
+      case 'coined':
+        wordKeys(p.text);
+        caps.add('coined');
+        break;
+      case 'user':
+        caps.add(`phrase:${p.phrase}`);
+        caps.add('literal');
+        break;
+      default:
+        break;
     }
-    if (p.kind === 'lex') {
-      const e = ctx.entryById.get(p.entryId);
-      if (e && (e.cliche ?? 0) >= CLASSIC && !ctx.liftedCliches.has(normalize(e.text))) caps.add('cliche-any');
-      if (ctx.symbolicIds.has(p.entryId)) caps.add('symbolic');
+  }
+  const head = recipe.parts.find(p => p.kind !== 'literal' && p.index === recipe.headSlot);
+  if (head) {
+    switch (head.kind) {
+      case 'lex': caps.add(`head:@${head.entryId}`); break;
+      case 'compound': caps.add(`head:@${head.headId}`); break;
+      case 'include': case 'user': case 'literal': break;
+      default: caps.add(`head:${normalize(head.text)}`);
     }
-    if (p.kind === 'user') caps.add(`phrase:${p.phrase}`);
-    if (p.kind === 'coined') caps.add('coined');
   }
   return {
     key: titleKey(title), title, recipe, score, family: recipe.family,
@@ -67,19 +103,32 @@ export function toCandidate(ctx: Context, title: string, recipe: Recipe, score: 
   };
 }
 
-export function recipeConcepts(ctx: Context, recipe: Recipe): string[] {
+/** Concepts carried by the words of the recipe itself. */
+function partConcepts(ctx: Context, recipe: Recipe): string[] {
   const out: string[] = [];
   for (const p of flattenParts(recipe.parts)) {
     if (p.kind === 'lex') out.push(...(ctx.entryById.get(p.entryId)?.concepts ?? []));
     else if (p.kind === 'compound') out.push(...(ctx.entryById.get(p.headId)?.concepts ?? []), ...(ctx.entryById.get(p.tailId)?.concepts ?? []));
     else if (p.kind === 'user') out.push(...(ctx.theme.phrases.find(ph => ph.norm === p.phrase)?.concepts ?? []));
   }
+  return out;
+}
+
+/** The recipe's concepts, with the anchor it was steered by. Similar uses this as its bias. */
+export function recipeConcepts(ctx: Context, recipe: Recipe): string[] {
+  const out = partConcepts(ctx, recipe);
   if (recipe.anchor) out.push(recipe.anchor);
   return [...new Set(out)];
 }
 
+/**
+ * Concepts a note may name. The anchor steers word choice but need not show in the title, so it is listed only when
+ * the user typed it or a word in the title carries it.
+ */
 function topConcepts(ctx: Context, recipe: Recipe, n: number): string[] {
-  return recipeConcepts(ctx, recipe)
+  const out = partConcepts(ctx, recipe);
+  if (recipe.anchor && ctx.userConcepts.has(recipe.anchor)) out.push(recipe.anchor);
+  return [...new Set(out)]
     .map(c => ({ c, s: (ctx.boost.get(c) ?? 1) * (ctx.userConcepts.has(c) ? 2 : 1) }))
     .filter(x => x.s > 0)
     .sort((a, b) => b.s - a.s)
@@ -96,7 +145,8 @@ export function toResult(ctx: Context, c: TitleCandidate): TitleResult {
     myth: ctx.myth.id === 'none' ? undefined : ctx.myth.noteLabel,
     genre: ctx.genre.noteLabel,
     concepts: concepts.map(id => ctx.conceptLabel(id)),
-    inventedProfile: invented ? ctx.profile.label : undefined,
+    invented,
+    inventedProfile: invented && ctx.profile.id !== 'neutral' ? ctx.profile.label : undefined,
     variant: c.title.length,
   });
   return {

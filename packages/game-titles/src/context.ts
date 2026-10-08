@@ -284,11 +284,16 @@ export function buildContext(settings: Settings, data: DataBundle, game: GameDat
 
   const include = resolveInclude(settings.include, index, entryById);
   let blocked = false;
-  if (include && violatesAvoid(include.text, [include.text], avoid)) {
+  // An Include word with no letter or digit (symbols, or a script this tool cannot render) can never appear in a title.
+  const unusable = !!include && !/[a-z0-9]/.test(include.norm);
+  if (unusable) {
+    blocked = true;
+    notices.push({ code: 'include-unusable', message: 'Your Include word has no letters or digits this tool can use. Try a word written in Latin letters.' });
+  } else if (include && violatesAvoid(include.text, [include.text], avoid)) {
     blocked = true;
     notices.push({ code: 'include-conflicts-avoid', message: 'Your Include word is also on your Avoid list. Remove it from one of them to generate titles.' });
   }
-  if (include && settings.length === 'one' && include.text.includes(' ')) {
+  if (include && !unusable && settings.length === 'one' && include.text.includes(' ')) {
     notices.push({ code: 'include-unusable', message: 'A multi-word Include word cannot fit one-word titles. Try Any or Short length.' });
   }
 

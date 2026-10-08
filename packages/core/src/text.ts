@@ -76,10 +76,14 @@ export function titleSyllables(title: string): number {
   return normalize(title).split(/[\s-]+/).filter(Boolean).reduce((n, w) => n + syllableCount(w), 0);
 }
 
+/**
+ * "a" or "an" by sound. A silent h takes "an"; a "yoo" start (unicorn, usual, euro, utility) takes "a". The prefix "un"
+ * before "i" is the plain vowel when "m" or "n" follows (unimpressed, uninvited) and "yoo" otherwise (unit, universe).
+ */
 export function indefiniteArticle(word: string): 'a' | 'an' {
   const w = word.trim().toLowerCase();
   if (/^(hour|honest|honou?r|heir)/.test(w)) return 'an';
-  if (/^(uni|use|usu|eu|one|once)/.test(w)) return 'a';
+  if (/^(uni(?![mn])|us[aeiu]|ut[eio]|eu|ew|one|once|ubi|uk|ufo)/.test(w)) return 'a';
   return /^[aeiou]/.test(w) ? 'an' : 'a';
 }
 

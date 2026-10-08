@@ -157,22 +157,47 @@ function rhythmBonus(origin: { words: number; chars: number; syllables: number }
 interface KeptHead {
   readonly norm: string;
   readonly keys: ReadonlySet<string>;
+  /** The lexicon entry of a kept lexicon head, so another form of the same word is still the kept head. */
+  readonly entryId?: string;
   /** Cap keys dropped from every candidate (invented words, when the source itself is an invented word). */
   readonly always: ReadonlySet<string>;
 }
 
-function keptHeadOf(head: Head | undefined): KeptHead | undefined {
+/** The cap keys toCandidate gives a head part: entry keys for lexicon words and compounds, text keys for the rest. */
+export function keptHeadOf(head: Head | undefined): KeptHead | undefined {
   if (!head) return undefined;
-  const keys = new Set<string>([`head:${normalize(head.text)}`, ...contentWords(head.text).map(w => `word:${w}`)]);
-  if (head.kind === 'user') keys.add(`phrase:${head.phrase}`);
-  return { norm: normalize(head.text), keys, always: new Set(head.kind === 'coined' ? ['coined'] : []) };
+  const keys = new Set<string>();
+  switch (head.kind) {
+    case 'lex':
+      keys.add(`head:@${head.entryId}`);
+      keys.add(`word:@${head.entryId}`);
+      break;
+    case 'compound':
+      keys.add(`head:@${head.headId}`);
+      keys.add(`word:@${head.headId}`);
+      keys.add(`word:@${head.tailId}`);
+      break;
+    case 'user':
+      keys.add(`phrase:${head.phrase}`);
+      break;
+    case 'include':
+      break;
+    default:
+      keys.add(`head:${normalize(head.text)}`);
+      for (const w of contentWords(head.text)) keys.add(`word:${w}`);
+  }
+  return {
+    norm: normalize(head.text), keys, entryId: head.kind === 'lex' ? head.entryId : undefined,
+    always: new Set(head.kind === 'coined' ? ['coined'] : []),
+  };
 }
 
 /** The candidate with the kept head's cap keys removed (a new object; the input is untouched). */
-function exemptKeptHead(c: TitleCandidate, kept: KeptHead | undefined): TitleCandidate {
+export function exemptKeptHead(c: TitleCandidate, kept: KeptHead | undefined): TitleCandidate {
   if (!kept) return c;
   const h = c.recipe.parts.find(p => p.kind !== 'literal' && p.index === c.recipe.headSlot);
-  const holdsKept = h !== undefined && h.kind !== 'literal' && normalize(h.text) === kept.norm;
+  const holdsKept = h !== undefined && h.kind !== 'literal' &&
+    (normalize(h.text) === kept.norm || (kept.entryId !== undefined && h.kind === 'lex' && h.entryId === kept.entryId));
   const drop = (k: string) => kept.always.has(k) || (holdsKept && kept.keys.has(k));
   return c.capKeys.some(drop) ? { ...c, capKeys: c.capKeys.filter(k => !drop(k)) } : c;
 }

@@ -90,3 +90,12 @@ test('asciiFold strips combining marks before folding special letters', () => {
     assert.equal(isAscii(asciiFold(s)), true, s);
   }
 });
+
+test('indefiniteArticle follows the sound, not the letter', () => {
+  for (const w of ['unimpressed', 'uninvited', 'unimportant', 'uninspired', 'unnamed', 'umbrella', 'oak', 'hour', 'honest', 'heir', 'ember']) {
+    assert.equal(indefiniteArticle(w), 'an', w);
+  }
+  for (const w of ['unicorn', 'unique', 'union', 'unit', 'universe', 'uniform', 'utopian', 'usual', 'euro', 'user', 'useful', 'one', 'ubiquitous', 'utility', 'ukulele', 'grim', 'hollow']) {
+    assert.equal(indefiniteArticle(w), 'a', w);
+  }
+});
