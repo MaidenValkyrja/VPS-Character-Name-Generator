@@ -796,7 +796,7 @@ changed the controls.
 | Rhythm match | Syllable pattern and word count (± 20% length) | Scored as a bonus across all of the above | Rime Pact |
 
 Invented words mutate one syllable or keep the onset or ending ("Vaskeld" → Vaskara, Valskeld, Vesskeld).
-Include and Avoid constraints still apply. Output: 6 titles, at least 3 strategies represented, none repeated.
+Include and Avoid constraints still apply. Output: 6 titles, none repeated, with at least 3 strategies represented when the source allows (invented-word sources use mutation and structural transform).
 
 ### 11.4 Shortlist (favourites)
 
@@ -896,8 +896,9 @@ Include and Avoid constraints still apply. Output: 6 titles, at least 3 strategi
 └───────────────────────────┘
 ```
 
-On mobile, Length, Creativity, Results, Include, Avoid and the second tone sit under **Fine-tune**, with
-a one-line summary of the current values so defaults stay visible.
+On mobile, Length, Creativity, Results, Include and Avoid sit under **Fine-tune**, with a one-line summary of
+the current values so defaults stay visible. The second tone stays behind its "+ add a second tone" link next to
+Tone, which is already collapsed by default. The shortlist is collapsed under "▸ Shortlist (n)" on mobile.
 
 ### 12.3 Content sections under the tool
 
@@ -914,7 +915,7 @@ a one-line summary of the current values so defaults stay visible.
 
 ## 13. Data Model
 
-The exact TypeScript lives in the implementation plan (Tasks 2, 9, 12 and 19). This section fixes the shapes
+The exact TypeScript lives in the implementation plan (Tasks 9, 10, 12 and 28). This section fixes the shapes
 and where they live.
 
 **@vps-name-tools/data** (shared content, reusable by future name tools)
@@ -1028,7 +1029,7 @@ Target: **WCAG 2.2 AA**.
 - **Names.** Buttons carry the title in their accessible name ("Save Ashen Oath to shortlist"). Save uses `aria-pressed`.
 - **Structure.** Results are an ordered list; each title is a heading (h3) for quick navigation; logical heading order across the page.
 - **Validation.** Errors (such as an Include word that is also on the Avoid list) are tied to fields with `aria-describedby` and written in plain language.
-- **Visual.** Text contrast ≥ 4.5:1; chips never rely on colour alone; light and dark themes via `prefers-color-scheme`.
+- **Visual.** Text contrast ≥ 4.5:1; chips never rely on colour alone; one dark studio theme (decision 7) with a higher-contrast variant under `prefers-contrast: more` and support for forced colours (Windows High Contrast).
 - **Targets.** ≥ 24 × 24 CSS px everywhere (WCAG 2.5.8); 44 × 44 px for primary actions on touch.
 - **Motion.** No animation when `prefers-reduced-motion` is set.
 - **Reflow.** Works at 320 px width and 400% zoom without horizontal scrolling.
@@ -1203,7 +1204,7 @@ The main VPS website is the primary reference. The Landscape Project Toolkit is 
 
 ### 22.2 How the live site informs the styling
 
-The capture step (implementation plan, Task 21) runs once the site is reachable from the build environment:
+The capture step (implementation plan, Task 26) runs once the site is reachable from the build environment:
 
 1. Screenshot the home page and two inner pages at 1440 px and 390 px.
 2. Extract computed styles: background colours and gradients, text colours, heading and body font families,
