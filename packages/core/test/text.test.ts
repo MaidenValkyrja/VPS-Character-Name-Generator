@@ -24,6 +24,12 @@ test('sanitizeInput removes control characters and caps length', () => {
   assert.equal(sanitizeInput('abcdef', 3), 'abc');
 });
 
+test('sanitizeInput does not leave a lone high surrogate at the cut', () => {
+  const out = sanitizeInput('a'.repeat(39) + '\u{1F600}', 40);
+  assert.equal(out.length, 39);
+  assert.doesNotThrow(() => encodeURIComponent(out));
+});
+
 test('titleCase keeps small words lowercase except first, last and after a colon', () => {
   assert.equal(titleCase('where the ravens sleep'), 'Where the Ravens Sleep');
   assert.equal(titleCase('aeternum: the ashen crown'), 'Aeternum: The Ashen Crown');

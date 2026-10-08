@@ -26,7 +26,8 @@ export function normalize(s: string): string {
 }
 
 export function sanitizeInput(s: string, max: number): string {
-  return s.replace(/[\u0000-\u001f\u007f]+/g, ' ').slice(0, max);
+  // Dropping a cut-off high surrogate keeps the result valid UTF-16 (encodeURIComponent throws on lone surrogates).
+  return s.replace(/[\u0000-\u001f\u007f]+/g, ' ').slice(0, max).replace(/[\uD800-\uDBFF]$/, '');
 }
 
 export const SMALL_WORDS: ReadonlySet<string> = new Set([
