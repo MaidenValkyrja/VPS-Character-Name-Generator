@@ -4,8 +4,14 @@ const FOLD: Readonly<Record<string, string>> = {
   'ŋ': 'ng', 'Ŋ': 'Ng',
 };
 
-/** Decompose and drop combining marks first, so letters like ǿ reach the special-letter map as ø. */
+const PRINTABLE_ASCII = /^[\x20-\x7e]*$/;
+
+/**
+ * Decompose and drop combining marks first, so letters like ǿ reach the special-letter map as ø.
+ * Printable ASCII has nothing to decompose or fold, so it is returned as it is: most strings are.
+ */
 export function asciiFold(s: string): string {
+  if (PRINTABLE_ASCII.test(s)) return s;
   return s
     .normalize('NFKD')
     .replace(/[̀-ͯ]/g, '')
@@ -16,9 +22,13 @@ export function isAscii(s: string): boolean {
   return /^[\x20-\x7e]*$/.test(s);
 }
 
+/** Already in normal form once lower-cased: single spaces between runs of [a-z0-9'-], nothing else. */
+const NORMAL_FORM = /^[a-z0-9'-]+(?: [a-z0-9'-]+)*$/;
+
 export function normalize(s: string): string {
-  return asciiFold(s)
-    .toLowerCase()
+  const lower = asciiFold(s).toLowerCase();
+  if (NORMAL_FORM.test(lower)) return lower;
+  return lower
     .replace(/[’‘`]/g, "'")
     .replace(/[^a-z0-9' -]+/g, ' ')
     .replace(/\s+/g, ' ')

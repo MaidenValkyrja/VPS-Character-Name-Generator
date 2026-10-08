@@ -12,8 +12,20 @@ export type LexSlot = 'noun' | 'nounPl' | 'adj' | 'verb' | 'abstract' | 'placeWo
 export type VocabSlot = 'frame' | 'frameSuffix' | 'genreSuffix' | 'number' | 'ordinal' | 'digits' | 'prep' | 'predicate' | 'epithet';
 export type Source = 'core' | 'genre' | 'myth' | 'symbolic';
 
-export interface Choice { readonly entry: LexEntry; readonly text: string; readonly source: Source }
-export interface VocabChoice { readonly text: string; readonly concepts: readonly string[]; readonly cliche: number }
+export interface Choice {
+  readonly entry: LexEntry;
+  readonly text: string;
+  /** normalize(text), computed once with the bundle cache so picks do not fold strings. */
+  readonly norm: string;
+  readonly source: Source;
+}
+export interface VocabChoice {
+  readonly text: string;
+  /** normalize(text), computed once per build. */
+  readonly norm: string;
+  readonly concepts: readonly string[];
+  readonly cliche: number;
+}
 export interface IncludeSpec { readonly text: string; readonly norm: string; readonly role: PhraseRole; readonly entry?: LexEntry }
 
 export interface Context {
@@ -107,7 +119,7 @@ const NO_ENTRIES: readonly LexEntry[] = [];
 
 function recFor(e: LexEntry, source: Source): EntryRec {
   const forms: Form[] = [];
-  const add = (slot: LexSlot, text: string) => forms.push({ slot, choice: { entry: e, text, source } });
+  const add = (slot: LexSlot, text: string) => forms.push({ slot, choice: { entry: e, text, norm: normalize(text), source } });
   if (e.pos.includes('noun')) {
     add('noun', e.text);
     if (!e.mass) add('nounPl', e.forms?.plural ?? pluralize(e.text));
@@ -478,10 +490,13 @@ export function buildContext(settings: Settings, data: DataBundle, game: GameDat
     temper(
       items
         .filter(({ v }) => !avoided(v.text))
-        .map(({ v, scale }) => ({
-          item: { text: v.text, concepts: v.concepts ?? [], cliche: lifted(normalize(v.text)) ? 0 : v.cliche ?? 0 },
-          weight: vocabWeight(v, slot) * scale,
-        })),
+        .map(({ v, scale }) => {
+          const norm = normalize(v.text);
+          return {
+            item: { text: v.text, norm, concepts: v.concepts ?? [], cliche: lifted(norm) ? 0 : v.cliche ?? 0 },
+            weight: vocabWeight(v, slot) * scale,
+          };
+        }),
       params.temperature,
     );
   const plain = (items: readonly VocabItem[]) => items.map(v => ({ v, scale: 1 }));

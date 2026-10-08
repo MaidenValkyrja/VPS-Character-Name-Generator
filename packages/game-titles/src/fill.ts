@@ -1,4 +1,4 @@
-import { coinWord, normalize, pickWeighted, pluralize, shuffle, unsafeGenerated, type Rng, type ThemePhrase } from '@vps-name-tools/core';
+import { coinWord, normalize, pickWeighted, pluralize, shuffle, unsafeGenerated, type Rng, type ThemePhrase, type Weighted } from '@vps-name-tools/core';
 import { foldTerm, termMatcher } from '@vps-name-tools/data';
 import { slotForRole, type Choice, type Context, type LexSlot, type VocabSlot } from './context';
 import { parsePattern } from './pattern';
@@ -80,33 +80,139 @@ export function isBlockedEngineWord(ctx: Context, word: string, coined = false):
   return false;
 }
 
-export function pickChoice(ctx: Context, rng: Rng, slot: LexSlot, o: SlotFill): Choice | undefined {
-  const ok = (c: Choice) =>
-    !o.used.has(c.entry.id) && !o.used.has(normalize(c.text)) &&
-    (!o.letter || c.text.toLowerCase().startsWith(o.letter)) && (!o.filter || o.filter(c));
-  if (!o.filter && rng() < ctx.params.wildcardRate) {
-    const flat = (ctx.flatPools.get(slot) ?? []).filter(ok);
-    if (flat.length > 0) return flat[Math.floor(rng() * flat.length)];
-  }
-  const related = o.anchor ? new Set(ctx.related.get(o.anchor) ?? []) : undefined;
-  const weighted: { item: Choice; weight: number }[] = [];
-  for (const w of ctx.pools.get(slot) ?? []) {
-    const c = w.item;
-    if (!ok(c)) continue;
-    let k = w.weight;
-    if (o.anchor) {
-      if (c.entry.concepts.includes(o.anchor)) k *= 2;
-      else if (related && c.entry.concepts.some(x => related.has(x))) k *= 1.4;
+/** Reused by every exact scan: the weights and pool positions of the choices that pass the filters. */
+let scratchWeight = new Float64Array(512);
+let scratchIndex = new Int32Array(512);
+
+/** Running sums of a pool's weights, built once per pool. A pool belongs to one context build and never changes. */
+const cumulativeWeights = new WeakMap<readonly Weighted<Choice>[], Float64Array>();
+
+function cumulativeOf(pool: readonly Weighted<Choice>[]): Float64Array {
+  let table = cumulativeWeights.get(pool);
+  if (!table) {
+    table = new Float64Array(pool.length);
+    let sum = 0;
+    for (let i = 0; i < pool.length; i++) {
+      if (pool[i].weight > 0) sum += pool[i].weight;
+      table[i] = sum;
     }
-    if (o.bias && c.entry.concepts.some(x => o.bias!.has(x))) k *= 2.5;
-    weighted.push({ item: c, weight: k });
+    cumulativeWeights.set(pool, table);
   }
-  return pickWeighted(rng, weighted);
+  return table;
+}
+
+/** Tries before a filtered pick falls back to scanning the pool. Most picks accept on the first or second try. */
+const SAMPLE_TRIES = 24;
+
+/**
+ * One weighted pick from a lexicon pool, honouring the slot's filters (words already used, alliteration letter,
+ * head filter), the anchor and the bias. The result has exactly the distribution of a scan that filters the pool,
+ * scales each weight (x2 for the anchor concept, x1.4 for a related one, x2.5 for the bias) and draws by weight.
+ *
+ * Fast path: draw from the whole pool by binary search on the cumulative weights, reject a draw that fails a
+ * filter, and accept the rest with probability factor / largest-factor. Accepted draws follow the filtered, scaled
+ * distribution. After SAMPLE_TRIES rejections (a filter that keeps little of the pool) the exact scan runs instead,
+ * which has the same distribution, so the choice of path never shows in the output.
+ */
+export function pickChoice(ctx: Context, rng: Rng, slot: LexSlot, o: SlotFill): Choice | undefined {
+  const used = o.used;
+  const letter = o.letter;
+  const filter = o.filter;
+  const ok = (c: Choice) =>
+    !used.has(c.entry.id) && !used.has(c.norm) &&
+    (!letter || c.text.toLowerCase().startsWith(letter)) && (!filter || filter(c));
+  if (!filter && rng() < ctx.params.wildcardRate) {
+    const flat = ctx.flatPools.get(slot);
+    if (flat && flat.length > 0) {
+      for (let t = 0; t < SAMPLE_TRIES; t++) {
+        const c = flat[Math.floor(rng() * flat.length)];
+        if (ok(c)) return c;
+      }
+      const left = flat.filter(ok);
+      if (left.length > 0) return left[Math.floor(rng() * left.length)];
+    }
+  }
+  const pool = ctx.pools.get(slot);
+  if (!pool || pool.length === 0) return undefined;
+  const anchor = o.anchor;
+  const related = anchor ? ctx.related.get(anchor) : undefined;
+  const bias = o.bias;
+  const factorOf = (c: Choice): number => {
+    let f = 1;
+    const concepts = c.entry.concepts;
+    if (anchor) {
+      let direct = false;
+      let near = false;
+      for (let j = 0; j < concepts.length; j++) {
+        const x = concepts[j];
+        if (x === anchor) direct = true;
+        else if (related && related.includes(x)) near = true;
+      }
+      if (direct) f *= 2;
+      else if (near) f *= 1.4;
+    }
+    if (bias) {
+      for (let j = 0; j < concepts.length; j++) {
+        if (bias.has(concepts[j])) {
+          f *= 2.5;
+          break;
+        }
+      }
+    }
+    return f;
+  };
+  const maxFactor = (anchor ? 2 : 1) * (bias ? 2.5 : 1);
+
+  const cumulative = cumulativeOf(pool);
+  const total = cumulative[pool.length - 1];
+  if (total <= 0) return undefined;
+  for (let t = 0; t < SAMPLE_TRIES; t++) {
+    const r = rng() * total;
+    let lo = 0;
+    let hi = pool.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (cumulative[mid] > r) hi = mid;
+      else lo = mid + 1;
+    }
+    const c = pool[lo].item;
+    if (!ok(c)) continue;
+    if (maxFactor === 1) return c;
+    const f = factorOf(c);
+    if (f >= maxFactor || rng() * maxFactor < f) return c;
+  }
+  return pickByScan(rng, pool, ok, factorOf);
+}
+
+/** The exact pick: every choice that passes the filters, each at its scaled weight. */
+function pickByScan(rng: Rng, pool: readonly Weighted<Choice>[], ok: (c: Choice) => boolean, factorOf: (c: Choice) => number): Choice | undefined {
+  if (pool.length > scratchWeight.length) {
+    scratchWeight = new Float64Array(pool.length * 2);
+    scratchIndex = new Int32Array(pool.length * 2);
+  }
+  let total = 0;
+  let m = 0;
+  for (let i = 0; i < pool.length; i++) {
+    const w = pool[i];
+    if (w.weight <= 0 || !ok(w.item)) continue;
+    const k = w.weight * factorOf(w.item);
+    scratchWeight[m] = k;
+    scratchIndex[m] = i;
+    m++;
+    total += k;
+  }
+  if (total <= 0) return undefined;
+  let r = rng() * total;
+  for (let j = 0; j < m; j++) {
+    r -= scratchWeight[j];
+    if (r < 0) return pool[scratchIndex[j]].item;
+  }
+  return pool[scratchIndex[m - 1]].item;
 }
 
 function pickVocab(ctx: Context, rng: Rng, slot: VocabSlot, o: SlotFill) {
   const weighted = (ctx.vocab.get(slot) ?? [])
-    .filter(w => !o.used.has(normalize(w.item.text)))
+    .filter(w => !o.used.has(w.item.norm))
     .map(w => ({ item: w.item, weight: o.anchor && w.item.concepts.includes(o.anchor) ? w.weight * 2 : w.weight }));
   return pickWeighted(rng, weighted);
 }

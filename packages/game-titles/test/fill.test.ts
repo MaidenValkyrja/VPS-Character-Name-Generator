@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRng } from '@vps-name-tools/core';
 import {
-  buildContext, normalizeSettings, fillTemplate, renderTitle, joinCompound, morphemesOf, isBlockedEngineWord, matcherFor, parsePattern, TEMPLATES, VOCAB,
-  type GameData, type RecipePart, type Settings, type Template,
+  buildContext, normalizeSettings, pickChoice, fillTemplate, renderTitle, joinCompound, morphemesOf, isBlockedEngineWord, matcherFor, parsePattern, TEMPLATES, VOCAB,
+  type Choice, type Context, type GameData, type RecipePart, type Settings, type Template,
 } from '../src/index';
 import { MINI } from '../../data/test/fixtures/mini-bundle';
 import { MINI_GAME } from './fixtures/mini-game';
@@ -128,4 +128,102 @@ test('term matchers are built once per list and match like containsTerm', () => 
   assert.notEqual(matcherFor(list), matcherFor([...list]));
   assert.equal(matcherFor(list)('hyrule falls'), 'hyrule');
   assert.equal(matcherFor(list)('thornfall'), undefined);
+});
+
+// ---- pickChoice samples from a cumulative table; its distribution must equal the exact filtered scan's ----
+
+interface Draw {
+  readonly used: Set<string>;
+  readonly anchor?: string;
+  readonly bias?: ReadonlySet<string>;
+  readonly filter?: (c: Choice) => boolean;
+}
+
+/** Each pool entry's probability by definition: filtered, scaled (anchor x2, related x1.4, bias x2.5), then by weight. */
+function exactProbabilities(c: Context, d: Draw): Map<string, number> {
+  const related = d.anchor ? c.related.get(d.anchor) ?? [] : [];
+  const raw = new Map<string, number>();
+  let total = 0;
+  for (const w of c.pools.get('noun')!) {
+    const ch = w.item;
+    if (d.used.has(ch.entry.id) || d.used.has(ch.norm) || (d.filter && !d.filter(ch))) continue;
+    let k = w.weight;
+    if (d.anchor) {
+      if (ch.entry.concepts.includes(d.anchor)) k *= 2;
+      else if (ch.entry.concepts.some(x => related.includes(x))) k *= 1.4;
+    }
+    if (d.bias && ch.entry.concepts.some(x => d.bias!.has(x))) k *= 2.5;
+    raw.set(ch.entry.id, k);
+    total += k;
+  }
+  return new Map([...raw].map(([id, k]) => [id, k / total]));
+}
+
+function assertDistribution(label: string, counts: ReadonlyMap<string, number>, expected: ReadonlyMap<string, number>, n: number): void {
+  for (const id of new Set([...counts.keys(), ...expected.keys()])) {
+    const p = expected.get(id) ?? 0;
+    const f = (counts.get(id) ?? 0) / n;
+    const sigma = Math.sqrt((p * (1 - p)) / n);
+    assert.ok(p > 0 || f === 0, `${label}: ${id} was drawn but has probability 0`);
+    assert.ok(Math.abs(f - p) <= 3 * sigma + 1e-12, `${label}: ${id} drawn at ${f.toFixed(4)}, expected ${p.toFixed(4)} +- ${(3 * sigma).toFixed(4)}`);
+  }
+}
+
+test('pickChoice draws each choice at its exact filtered and scaled probability', () => {
+  const c = ctx({ creativity: 'focused' });
+  const pool = c.pools.get('noun')!;
+  const byWeight = [...pool].sort((a, b) => b.weight - a.weight).map(w => w.item);
+  assert.ok(byWeight.length >= 12, 'the noun pool is big enough to filter');
+  const anchor = byWeight[0].entry.concepts[0];
+  const bias = new Set(byWeight[2].entry.concepts);
+  const cases: [string, Draw][] = [
+    ['no filters', { used: new Set() }],
+    ['anchor and bias', { used: new Set(), anchor, bias }],
+    // Eight heavy words stay; one of them is already used. Most draws land on a word the filter keeps.
+    ['filter keeping the heaviest', { used: new Set([byWeight[1].entry.id]), anchor, bias, filter: ch => byWeight.slice(0, 8).includes(ch) }],
+    // Three light words stay. Draws are rejected so often that the exact scan takes over.
+    ['filter keeping the lightest', { used: new Set(), anchor, bias, filter: ch => byWeight.slice(-3).includes(ch) }],
+    ['used words only', { used: new Set(byWeight.slice(0, 6).flatMap(ch => [ch.entry.id, ch.norm])), bias }],
+  ];
+  const n = 20000;
+  for (const [label, draw] of cases) {
+    const rng = createRng(`stat:${label}`);
+    const counts = new Map<string, number>();
+    for (let i = 0; i < n; i++) {
+      const ch = pickChoice(c, rng, 'noun', { anchor: draw.anchor, bias: draw.bias, used: draw.used, filter: draw.filter });
+      assert.ok(ch, label);
+      counts.set(ch.entry.id, (counts.get(ch.entry.id) ?? 0) + 1);
+    }
+    assertDistribution(label, counts, exactProbabilities(c, draw), n);
+  }
+});
+
+test('pickChoice mixes the wildcard draw in at the wildcard rate', () => {
+  const c = ctx({ creativity: 'wild' });
+  const rate = c.params.wildcardRate;
+  assert.ok(rate > 0);
+  const used = new Set(['ash']);
+  const weighted = exactProbabilities(c, { used });
+  const flat = (c.flatPools.get('noun') ?? []).filter(ch => !used.has(ch.entry.id) && !used.has(ch.norm));
+  const expected = new Map<string, number>();
+  for (const [id, p] of weighted) expected.set(id, (1 - rate) * p);
+  for (const ch of flat) expected.set(ch.entry.id, (expected.get(ch.entry.id) ?? 0) + rate / flat.length);
+  const n = 20000;
+  const rng = createRng('stat:wild');
+  const counts = new Map<string, number>();
+  for (let i = 0; i < n; i++) {
+    const ch = pickChoice(c, rng, 'noun', { used })!;
+    counts.set(ch.entry.id, (counts.get(ch.entry.id) ?? 0) + 1);
+  }
+  assertDistribution('wildcard mix', counts, expected, n);
+});
+
+test('pickChoice returns nothing when every choice is filtered out, and honours the alliteration letter', () => {
+  const c = ctx({ creativity: 'focused' });
+  const everyone = new Set(c.pools.get('noun')!.flatMap(w => [w.item.entry.id]));
+  assert.equal(pickChoice(c, createRng('none'), 'noun', { used: everyone }), undefined);
+  assert.equal(pickChoice(c, createRng('none'), 'noun', { used: new Set(), filter: () => false }), undefined);
+  assert.equal(pickChoice(c, createRng('none'), 'verbless' as never, { used: new Set() }), undefined);
+  const rng = createRng('letter');
+  for (let i = 0; i < 200; i++) assert.ok(pickChoice(c, rng, 'noun', { used: new Set(), letter: 'w' })!.text.toLowerCase().startsWith('w'));
 });

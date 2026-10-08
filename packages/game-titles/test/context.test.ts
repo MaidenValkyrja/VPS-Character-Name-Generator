@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { compileAvoid, createRng, parseAvoid, prepareAvoidText, violatesAvoid } from '@vps-name-tools/core';
+import { compileAvoid, createRng, normalize, parseAvoid, prepareAvoidText, violatesAvoid } from '@vps-name-tools/core';
 import { buildContext, narrowTemplates, normalizeSettings, type Context, type Settings, type Template } from '../src/index';
 import { MINI } from '../../data/test/fixtures/mini-bundle';
 import { MINI_GAME } from './fixtures/mini-game';
@@ -378,4 +378,17 @@ test('the invented-word rate follows the creativity level unless the style sets 
   assert.deepEqual(['focused', 'balanced', 'wild'].map(creativity => ctx({ creativity: creativity as Settings['creativity'] }).coinedRate), [0.1, 0.2, 0.35]);
   const brandable = ['focused', 'balanced', 'wild'].map(creativity => ctx({ creativity: creativity as Settings['creativity'], style: 'brandable' }).coinedRate);
   assert.deepEqual(brandable, [0.6, 0.6, 0.6]);
+});
+
+test('pooled choices carry their normalised text', () => {
+  const c = ctx({ genre: 'dark-fantasy', myth: 'norse' });
+  let lexical = 0;
+  for (const pool of c.pools.values()) {
+    for (const w of pool) {
+      assert.equal(w.item.norm, normalize(w.item.text));
+      lexical++;
+    }
+  }
+  for (const pool of c.vocab.values()) for (const w of pool) assert.equal(w.item.norm, normalize(w.item.text));
+  assert.ok(lexical > 20);
 });

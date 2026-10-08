@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fc from 'fast-check';
 import {
   asciiFold, isAscii, normalize, sanitizeInput, titleCase, wordCount, contentWords,
   syllableCount, indefiniteArticle, pluralize, lemmaCandidates,
@@ -97,5 +98,41 @@ test('indefiniteArticle follows the sound, not the letter', () => {
   }
   for (const w of ['unicorn', 'unique', 'union', 'unit', 'universe', 'uniform', 'utopian', 'usual', 'euro', 'user', 'useful', 'one', 'ubiquitous', 'utility', 'ukulele', 'grim', 'hollow']) {
     assert.equal(indefiniteArticle(w), 'a', w);
+  }
+});
+
+// ---- The ASCII fast path must return exactly what the full fold returns ----
+
+const FOLD_MAP: Record<string, string> = {
+  'æ': 'ae', 'Æ': 'Ae', 'œ': 'oe', 'Œ': 'Oe', 'ð': 'd', 'Ð': 'D', 'þ': 'th', 'Þ': 'Th',
+  'ø': 'o', 'Ø': 'O', 'ß': 'ss', 'ł': 'l', 'Ł': 'L', 'đ': 'd', 'Đ': 'D', 'ı': 'i', 'ŋ': 'ng', 'Ŋ': 'Ng',
+};
+/** The fold as it was before the fast path: always decompose, strip marks, map the special letters. */
+const referenceFold = (s: string): string =>
+  s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[æÆœŒðÐþÞøØßłŁđĐıŊŋ]/g, ch => FOLD_MAP[ch] ?? ch);
+const referenceNormalize = (s: string): string =>
+  referenceFold(s).toLowerCase().replace(/[’‘`]/g, "'").replace(/[^a-z0-9' -]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+const printable = fc.string({ unit: fc.integer({ min: 0x20, max: 0x7e }).map(n => String.fromCharCode(n)), maxLength: 60 });
+const tricky = fc.string({
+  unit: fc.constantFrom('a', 'Z', '7', ' ', '-', "'", '`', '’', '‘', 'é', 'Ö', 'ø', 'Æ', 'ß', 'ł', 'ŋ', 'ı', '\u0301', '\u00a0', '日', '\ufb01', '１', '👍', '\n', '\t'),
+  maxLength: 40,
+});
+
+test('asciiFold and normalize match the full fold for ASCII, Latin and other text', () => {
+  const strings = fc.oneof(printable, tricky, fc.string({ unit: 'binary-ascii', maxLength: 40 }), fc.string({ unit: 'grapheme', maxLength: 30 }), fc.string({ unit: 'binary', maxLength: 30 }));
+  fc.assert(
+    fc.property(strings, s => {
+      assert.equal(asciiFold(s), referenceFold(s));
+      assert.equal(normalize(s), referenceNormalize(s));
+    }),
+    { numRuns: 4000, seed: 20261008 },
+  );
+});
+
+test('the ASCII path keeps the cases the fold treats specially', () => {
+  for (const s of ["It's", 'it`s', 'Ash  Wolf', '  pad ', 'A-B', 'x\ty', '', 'Ærïs', 'ǿ']) {
+    assert.equal(asciiFold(s), referenceFold(s), JSON.stringify(s));
+    assert.equal(normalize(s), referenceNormalize(s), JSON.stringify(s));
   }
 });
