@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateData, noun, DATA, type DataBundle, type MythPack } from '../src/index';
+import { validateData, noun, DATA, SAFETY, type DataBundle, type MythPack } from '../src/index';
 import { MINI } from './fixtures/mini-bundle';
 
 const errors = (b: DataBundle, release = false, bannedTerms: string[] = []) =>
@@ -32,8 +32,43 @@ test('non-ASCII text is an error', () => {
 
 test('Tier B packs need a denylist and an -inspired label', () => {
   const msgs = errors(withPack({ tier: 'B', denylist: [], noteLabel: 'Norse' }));
-  assert.ok(msgs.some(m => m.includes('need a denylist')));
+  assert.ok(msgs.some(m => m.includes('needs a denylist')));
   assert.ok(msgs.some(m => m.includes('-inspired')));
+});
+
+test('every cultural pack needs a denylist, Tier A included', () => {
+  const msgs = errors(withPack({ tier: 'A', denylist: [] }));
+  assert.ok(msgs.includes('every cultural pack needs a denylist'));
+  assert.deepEqual(errors(MINI).filter(m => m.includes('denylist')), []);
+});
+
+test('only the none and original packs may have an empty denylist', () => {
+  const norse = MINI.myths.find(m => m.id === 'norse')!;
+  const original: MythPack = { ...norse, id: 'original', label: 'Original', noteLabel: 'original', imagery: [], symbolic: [], denylist: [] };
+  const bundle: DataBundle = { ...MINI, myths: [...MINI.myths, original] };
+  assert.deepEqual(errors(bundle).filter(m => m.includes('denylist')), []);
+  assert.deepEqual(errors(MINI).filter(m => m.includes('denylist')), []);
+});
+
+test('Tier B note labels must carry the hyphenated -inspired suffix', () => {
+  const ok = { tier: 'B' as const, label: 'Japanese-inspired', noteLabel: 'Japanese-inspired' };
+  assert.deepEqual(errors(withPack(ok)).filter(m => m.includes('-inspired')), []);
+  const bad = errors(withPack({ ...ok, noteLabel: 'Uninspired Japanese' }));
+  assert.ok(bad.some(m => m.includes('noteLabel') && m.includes('-inspired')));
+  assert.ok(!bad.some(m => m.includes('pack label')));
+});
+
+test('Tier B labels must carry the hyphenated -inspired suffix', () => {
+  const bad = errors(withPack({ tier: 'B', label: 'Japanese', noteLabel: 'Japanese-inspired' }));
+  assert.ok(bad.some(m => m.includes('pack label') && m.includes('-inspired')));
+  assert.ok(!bad.some(m => m.includes('noteLabel')));
+  const unhyphenated = errors(withPack({ tier: 'B', label: 'Japanese inspired', noteLabel: 'Japanese inspired' }));
+  assert.ok(unhyphenated.some(m => m.includes('pack label')));
+  assert.ok(unhyphenated.some(m => m.includes('noteLabel')));
+});
+
+test('the reviewed three-letter slur is a blocked fragment in invented words', () => {
+  assert.ok(SAFETY.coinedSubstrings.includes('fag'));
 });
 
 test('symbolic terms need a source note', () => {

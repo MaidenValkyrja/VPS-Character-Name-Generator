@@ -4,13 +4,21 @@ import type { DataBundle, Issue, LexEntry } from './types';
 
 export const RELEASE_TARGETS = { concepts: 250, aliases: 1000, lexicon: 1200, imageryPerPack: 40 } as const;
 
-/** Word-boundary match, plus substring match for terms of 5+ letters ("Freyjasgard"). The engine adds a prefix check for invented words (Task 14). */
+/** Folds text and terms alike: normalised, apostrophes and hyphens become spaces, spaces collapse. */
+const foldTerm = (s: string) => normalize(s).replace(/['-]/g, ' ').replace(/\s+/g, ' ').trim();
+
+/**
+ * A multi-word term matches only as a whole-word phrase. A single-word term matches a whole token, or, when it has
+ * 5+ letters, the start of a token ("Freyjasgard" contains "freyja"). It never matches inside a token or across words
+ * ("Shades" is not "hades", "Hall Ahead" is not "allah"). The engine adds its own prefix check for invented words (Task 14).
+ */
 export function containsTerm(normText: string, term: string): boolean {
-  const t = normalize(term);
+  const t = foldTerm(term);
   if (!t) return false;
-  if (` ${normText.replace(/['-]/g, ' ')} `.includes(` ${t} `)) return true;
-  const letters = t.replace(/[^a-z]/g, '');
-  return letters.length >= 5 && normText.replace(/[^a-z]/g, '').includes(letters);
+  const text = foldTerm(normText);
+  if (t.includes(' ')) return ` ${text} `.includes(` ${t} `);
+  const prefixOk = t.replace(/[^a-z]/g, '').length >= 5;
+  return text.split(' ').some(tok => tok === t || (prefixOk && tok.startsWith(t)));
 }
 
 export function validateData(b: DataBundle, o: { release?: boolean; bannedTerms?: readonly string[] } = {}): Issue[] {
@@ -68,8 +76,9 @@ export function validateData(b: DataBundle, o: { release?: boolean; bannedTerms?
       const n = normalize(e.text);
       for (const d of m.denylist) if (containsTerm(n, d)) error(where, `"${e.text}" contains denylisted "${d}"`);
     }
-    if (m.tier === 'B' && m.denylist.length === 0) error(where, 'Tier B packs need a denylist');
-    if (m.tier === 'B' && !m.noteLabel.includes('inspired')) error(where, 'Tier B note labels say "-inspired"');
+    if (m.id !== 'none' && m.id !== 'original' && m.denylist.length === 0) error(where, 'every cultural pack needs a denylist');
+    if (m.tier === 'B' && !/-inspired/.test(m.label)) error(where, 'Tier B pack label must say "-inspired"');
+    if (m.tier === 'B' && !/-inspired/.test(m.noteLabel)) error(where, 'Tier B pack noteLabel must say "-inspired"');
     if (m.review.status === 'held' && !m.review.notes.trim()) error(where, 'a held pack must give the reason in review.notes');
     if (m.id !== 'none' && !m.blend && m.imagery.length < RELEASE_TARGETS.imageryPerPack) {
       target(where, `imagery has ${m.imagery.length} entries; target ${RELEASE_TARGETS.imageryPerPack}`);

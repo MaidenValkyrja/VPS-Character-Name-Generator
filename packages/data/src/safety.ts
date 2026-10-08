@@ -8,8 +8,8 @@ export const EXTREMIST_PHRASES: readonly string[] = [
   'aryan nation', 'aryan nations', 'hitler', 'nazi', 'swastika',
 ];
 
-/** 3-letter slurs copied from the build-safety review list (step above). Keep this list short and reviewed. */
-export const EXTRA_SHORT_FRAGMENTS: readonly string[] = [];
+/** 3-letter slurs picked by hand from the build-safety review list (ass, bbw, cum, fag, sex, tit, xxx). Keep this list short and reviewed. */
+export const EXTRA_SHORT_FRAGMENTS: readonly string[] = ['fag'];
 
 /** Extremist fragments an invented word must never contain ("Nazimund"). Invented words only. */
 export const EXTREMIST_FRAGMENTS: readonly string[] = ['nazi', 'hitler', 'heil', 'reich', 'sieg', 'aryan', 'kkk', 'zyklon', 'rahowa'];
