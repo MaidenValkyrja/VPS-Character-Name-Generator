@@ -1,10 +1,10 @@
 import { coinWord, normalize, pickWeighted, pluralize, shuffle, unsafeGenerated, type Rng, type ThemePhrase, type Weighted } from '@vps-name-tools/core';
-import { foldTerm, termMatcher } from '@vps-name-tools/data';
+import { foldTerm, termMatcher, type DataBundle } from '@vps-name-tools/data';
 import { slotForRole, type Choice, type Context, type LexSlot, type VocabSlot } from './context';
 import { parsePattern } from './pattern';
 import { joinCompound, renderRaw } from './render';
 import type { SlotType } from './ids';
-import type { PatternToken, Recipe, RecipePart, SlotToken, Template } from './types';
+import type { GameData, PatternToken, Recipe, RecipePart, SlotToken, Template } from './types';
 
 export interface FillOptions {
   readonly anchor?: string;
@@ -63,7 +63,38 @@ function prefixNames(terms: readonly string[], mode: 'any' | 'single'): readonly
 
 const startsWithAny = (letters: string, names: readonly string[]): boolean => names.some(name => letters.startsWith(name));
 
+/** Compiles the term matchers and parses the subtitle patterns that a first batch would otherwise build. */
+export function prewarmFill(data: DataBundle, game: GameData): void {
+  matcherFor(game.franchiseTerms);
+  prefixNames(game.franchiseTerms, 'single');
+  for (const { denylist } of data.myths) {
+    matcherFor(denylist);
+    prefixNames(denylist, 'any');
+  }
+  for (const g of game.genres) if (g.guard?.blockPhrases) matcherFor(g.guard.blockPhrases);
+  const patterns = game.vocab.subtitlePatterns;
+  if (patterns.length > 0 && !subtitleCache.has(patterns)) subtitleCache.set(patterns, patterns.map(parsePattern));
+}
+
+/** Verdicts of isBlockedEngineWord for one build: the same word is tried many times while a batch is filled. */
+const blockedVerdicts = new WeakMap<Context, Map<string, boolean>>();
+
 export function isBlockedEngineWord(ctx: Context, word: string, coined = false): boolean {
+  let memo = blockedVerdicts.get(ctx);
+  if (!memo) {
+    memo = new Map();
+    blockedVerdicts.set(ctx, memo);
+  }
+  const key = coined ? `c:${word}` : `w:${word}`;
+  let verdict = memo.get(key);
+  if (verdict === undefined) {
+    verdict = computeBlocked(ctx, word, coined);
+    memo.set(key, verdict);
+  }
+  return verdict;
+}
+
+function computeBlocked(ctx: Context, word: string, coined: boolean): boolean {
   const n = normalize(word);
   if (unsafeGenerated(word, [word], ctx.data.safety)) return true;
   if (ctx.game.knownTitles.has(n)) return true;

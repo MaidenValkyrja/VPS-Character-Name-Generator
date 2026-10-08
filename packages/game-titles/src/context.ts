@@ -191,6 +191,17 @@ export function steeringIndexFor(data: DataBundle, game: GameData): SteeringInde
   return cacheFor(data, game).index;
 }
 
+/** Builds the settings-independent data of a bundle: the cache and every pool form, for all genres and packs. */
+export function prewarmBundle(data: DataBundle, game: GameData): void {
+  const cache = cacheFor(data, game);
+  cache.recsOf(data.lexicon, 'core');
+  for (const g of game.genres) if (g.entries) cache.recsOf(g.entries, 'genre');
+  for (const m of data.myths) {
+    cache.recsOf(m.imagery, 'myth');
+    cache.recsOf(m.symbolic, 'symbolic');
+  }
+}
+
 /** Each build that has Avoid rules takes a fresh stamp, so a shared probe is evaluated once per build. */
 let buildStamp = 0;
 

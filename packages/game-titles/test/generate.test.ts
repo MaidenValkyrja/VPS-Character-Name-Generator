@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRng, normalize } from '@vps-name-tools/core';
-import { buildContext, flattenParts, generate, normalizeSettings, titleKey, toCandidate, type Settings, type TitleResult } from '../src/index';
+import { buildContext, flattenParts, generate, normalizeSettings, prewarm, titleKey, toCandidate, type Settings, type TitleResult } from '../src/index';
 import { MINI } from '../../data/test/fixtures/mini-bundle';
 import { MINI_GAME } from './fixtures/mini-game';
 
@@ -195,4 +195,87 @@ test('the invented-word share rises with the creativity level and stays within i
     assert.ok(mean[creativity] <= caps[creativity], `${creativity}: mean ${mean[creativity].toFixed(3)} above ${caps[creativity]}`);
   }
   assert.ok(mean.wild > mean.balanced && mean.balanced > mean.focused, JSON.stringify(mean));
+});
+
+// ---- Fix round 2: generation stops once a batch can be picked without relaxing a limit ----
+
+/** A Set that counts how many candidates reached the duplicate check, one call per candidate that passed the filters. */
+class CountingSet extends Set<string> {
+  calls = 0;
+  override has(key: string): boolean {
+    this.calls++;
+    return super.has(key);
+  }
+}
+
+/** MINI with its lexicon repeated under new ids and spellings, so a batch of 20 can honour the entry caps. */
+function scaledMini(times: number): typeof MINI {
+  const tag = (k: number) => 'bcdfghklmnprstvz'[k % 16] + 'aeiou'[Math.floor(k / 16) % 5];
+  const lexicon = Array.from({ length: times }, (_, k) =>
+    MINI.lexicon.map(e => (k === 0 ? e : {
+      ...e, id: `${e.id}-${k}`, text: e.text + tag(k),
+      forms: e.forms && Object.fromEntries(Object.entries(e.forms).map(([form, text]) => [form, `${text}${tag(k)}`])),
+    })),
+  ).flat();
+  return { ...MINI, lexicon };
+}
+
+test('generation stops early once the pool can fill the batch within the limits', () => {
+  const big = scaledMini(8);
+  for (const [count, data] of [[5, MINI], [10, MINI], [20, big]] as const) {
+    const floor = Math.max(3 * count, count + 20);
+    let total = 0;
+    for (let i = 0; i < 10; i++) {
+      const exclude = new CountingSet();
+      const r = generate({ count }, { seed: `early${i}`, data, game: MINI_GAME, exclude });
+      assert.equal(r.titles.length, count);
+      assert.ok(exclude.calls >= floor, `${count}: only ${exclude.calls} candidates, floor ${floor}`);
+      total += exclude.calls;
+    }
+    assert.ok(total / 10 < count * 6, `${count}: mean ${total / 10} candidates, the full pool is ${count * 6}`);
+  }
+});
+
+test('generation goes on to the full pool when the early pool cannot fill the batch within the limits', () => {
+  // One-word titles from 60 lexicon words cannot all have a distinct head, so no early pool is a strict fill.
+  for (let i = 0; i < 5; i++) {
+    const exclude = new CountingSet();
+    const r = generate({ count: 20, length: 'one' }, { seed: `hard${i}`, data: MINI, game: MINI_GAME, exclude });
+    assert.equal(r.titles.length, 20);
+    assert.equal(exclude.calls, 120, `hard${i}`);
+  }
+});
+
+test('the early stop keeps the seed contract and the batch size', () => {
+  for (const seed of ['e1', 'e2', 'e3']) {
+    for (const count of [5, 10, 20] as const) {
+      const a = run({ count }, seed);
+      const b = run({ count }, seed);
+      assert.deepEqual(a.titles.map(t => t.title), b.titles.map(t => t.title));
+      assert.equal(a.titles.length, count);
+      assert.equal(new Set(a.titles.map(t => titleKey(t.title))).size, count);
+    }
+  }
+});
+
+// ---- prewarm builds the lazy data and changes no result ----
+
+test('prewarm then generate gives the same titles as generate alone', () => {
+  // Two copies of the bundle, so each has its own per-bundle cache.
+  const copy = () => ({ data: { ...MINI, myths: MINI.myths.map(m => ({ ...m, denylist: [...m.denylist] })) }, game: { ...MINI_GAME, franchiseTerms: [...MINI_GAME.franchiseTerms] } });
+  const cold = copy();
+  const warm = copy();
+  const patches: Partial<Settings>[] = [{}, { genre: 'dark-fantasy', myth: 'norse', count: 20 }, { include: 'Aeternum' }, { themes: 'lantern, aurora', creativity: 'wild' }, { style: 'compound', creativity: 'focused' }];
+  const before = patches.map((p, i) => generate(p, { seed: `pw${i}`, ...cold }).titles.map(t => t.title));
+  prewarm(warm.data, warm.game);
+  const after = patches.map((p, i) => generate(p, { seed: `pw${i}`, ...warm }).titles.map(t => t.title));
+  assert.deepEqual(after, before);
+  // Prewarming again, or on the cold copy afterwards, changes nothing either.
+  prewarm(cold.data, cold.game);
+  assert.deepEqual(patches.map((p, i) => generate(p, { seed: `pw${i}`, ...cold }).titles.map(t => t.title)), before);
+});
+
+test('prewarm with no arguments builds the shipped bundle without throwing', () => {
+  prewarm();
+  assert.ok(generate({ count: 5 }, { seed: 'pw-default' }).titles.length > 0);
 });

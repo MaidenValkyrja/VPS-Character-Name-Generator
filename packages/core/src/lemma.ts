@@ -6,8 +6,24 @@ const IRREGULAR: Readonly<Record<string, string>> = {
   men: 'man', women: 'woman', mice: 'mouse', geese: 'goose', teeth: 'tooth', feet: 'foot',
 };
 
-/** The word itself plus plausible base forms. Matching tries every candidate. */
-export function lemmaCandidates(word: string): string[] {
+/** Results by input word. Words repeat constantly (repeated-root checks compare every pair of words in a title). */
+const MEMO_LIMIT = 5000;
+const memo = new Map<string, readonly string[]>();
+
+/**
+ * The word itself plus plausible base forms. Matching tries every candidate.
+ * The result is shared between calls for the same word: treat it as read-only.
+ */
+export function lemmaCandidates(word: string): readonly string[] {
+  const hit = memo.get(word);
+  if (hit) return hit;
+  const out = computeLemmas(word);
+  if (memo.size >= MEMO_LIMIT) memo.clear();
+  memo.set(word, out);
+  return out;
+}
+
+function computeLemmas(word: string): readonly string[] {
   const w = word.toLowerCase();
   const out = new Set<string>([w]);
   const irregular = IRREGULAR[w];

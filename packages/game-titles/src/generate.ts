@@ -2,16 +2,16 @@ import {
   contentWords, createRng, hash32, normalize, pickWeighted, randomSeed, selectDiverse,
   type Candidate, type Rng, type SelectOptions, type ThemePhrase,
 } from '@vps-name-tools/core';
-import { DATA } from '@vps-name-tools/data';
+import { DATA, type DataBundle } from '@vps-name-tools/data';
 import { checkCandidate } from './constraints';
-import { buildContext, type Context } from './context';
-import { fillTemplate } from './fill';
+import { buildContext, prewarmBundle, type Context } from './context';
+import { fillTemplate, prewarmFill } from './fill';
 import { GAME } from './game';
 import { buildNote } from './notes';
 import { flattenParts, renderTitle } from './render';
 import { scoreCandidate } from './score';
 import { normalizeSettings, type Settings } from './settings';
-import type { GenerateOptions, GenerateResult, Recipe, TitleResult } from './types';
+import type { GameData, GenerateOptions, GenerateResult, Recipe, TitleResult } from './types';
 
 export interface TitleCandidate extends Candidate {
   readonly title: string;
@@ -191,19 +191,45 @@ export function generate(input: Partial<Settings>, opts: GenerateOptions = {}): 
   if (ctx.blocked) return { titles: [], notices: ctx.notices, seed };
 
   const target = settings.count * 6;
+  // Generation can stop before the full pool once there is a fair choice and a trial selection fills the batch
+  // without relaxing a family or cap limit: more candidates would only polish a batch that is already complete.
+  // The trial runs once, at the floor. A pool that cannot be picked strictly by then (a small lexicon, a tight style)
+  // is not helped by a few more candidates, so it goes on to the full pool and one final selection.
+  const floor = Math.min(target, Math.max(3 * settings.count, settings.count + 20));
+  const options = selectionOptions(ctx, settings.count);
   const candidates: TitleCandidate[] = [];
   const seen = new Set<string>();
   const phraseUse = new Map<string, number>();
+  let trial: TitleCandidate[] | undefined;
   for (let attempt = 0; attempt < target * 5 && candidates.length < target; attempt++) {
     const c = buildCandidate(ctx, rng, phraseUse, `${seed}:${attempt}`);
     if (!c || seen.has(c.key) || opts.exclude?.has(c.key)) continue;
     seen.add(c.key);
     candidates.push(c);
+    if (candidates.length === floor && floor < target) {
+      const report = { strict: false };
+      const picks = selectDiverse(candidates, options, report);
+      if (report.strict) {
+        trial = picks;
+        break;
+      }
+    }
   }
-  const picked = selectDiverse(candidates, selectionOptions(ctx, settings.count));
+  const picked = trial ?? selectDiverse(candidates, options);
   const notices = [...ctx.notices];
   if (picked.length < settings.count) {
     notices.push({ code: 'shortfall', message: `Only ${picked.length} titles fit these settings. Try another length or style, or fewer Avoid words.` });
   }
   return { titles: picked.map(c => toResult(ctx, c)), notices, seed };
+}
+
+/**
+ * Builds everything a first batch would build lazily: the per-bundle cache, the term matchers, and the compiled hot
+ * paths (two short throwaway batches). Call it at idle, after load. It changes no result: the same seed gives the same
+ * titles with or without it. It takes a few tens of milliseconds, so it belongs in an idle callback, not in a handler.
+ */
+export function prewarm(data: DataBundle = DATA, game: GameData = GAME): void {
+  prewarmBundle(data, game);
+  prewarmFill(data, game);
+  for (let i = 0; i < 2; i++) generate({ count: 10 }, { seed: `prewarm:${i}`, data, game });
 }

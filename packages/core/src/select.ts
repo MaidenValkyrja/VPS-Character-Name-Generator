@@ -13,6 +13,12 @@ export interface SelectOptions {
   readonly diversity: number;
 }
 
+/** Filled in by selectDiverse when the caller passes one. */
+export interface SelectReport {
+  /** True when `count` candidates were picked without dropping the family limits or the cap limits. */
+  strict: boolean;
+}
+
 export function jaccard(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
   if (a.size === 0 && b.size === 0) return 0;
   let shared = 0;
@@ -20,7 +26,7 @@ export function jaccard(a: ReadonlySet<string>, b: ReadonlySet<string>): number 
   return shared / (a.size + b.size - shared);
 }
 
-export function selectDiverse<C extends Candidate>(candidates: readonly C[], opts: SelectOptions): C[] {
+export function selectDiverse<C extends Candidate>(candidates: readonly C[], opts: SelectOptions, report?: SelectReport): C[] {
   const byKey = new Map<string, C>();
   for (const c of candidates) {
     const prev = byKey.get(c.key);
@@ -40,7 +46,10 @@ export function selectDiverse<C extends Candidate>(candidates: readonly C[], opt
     { families: false, caps: true },
     { families: false, caps: false },
   ];
-  for (const pass of passes) {
+  // The index of the last pass that made a pick: 0 means every pick honoured the family and cap limits.
+  let lastPass = 0;
+  for (let p = 0; p < passes.length; p++) {
+    const pass = passes[p];
     while (picked.length < opts.count) {
       let best = -1;
       let bestValue = -Infinity;
@@ -58,6 +67,7 @@ export function selectDiverse<C extends Candidate>(candidates: readonly C[], opt
       if (best < 0) break;
       const chosen = pool[best];
       used[best] = true;
+      lastPass = p;
       picked.push(chosen);
       familyCount.set(chosen.family, (familyCount.get(chosen.family) ?? 0) + 1);
       for (const k of chosen.capKeys) capCount.set(k, (capCount.get(k) ?? 0) + 1);
@@ -67,5 +77,6 @@ export function selectDiverse<C extends Candidate>(candidates: readonly C[], opt
     }
     if (picked.length >= opts.count) break;
   }
+  if (report) report.strict = picked.length >= opts.count && lastPass === 0;
   return picked;
 }

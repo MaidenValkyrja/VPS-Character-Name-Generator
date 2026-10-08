@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRng } from '@vps-name-tools/core';
 import {
-  buildContext, normalizeSettings, pickChoice, fillTemplate, renderTitle, joinCompound, morphemesOf, isBlockedEngineWord, matcherFor, parsePattern, TEMPLATES, VOCAB,
+  buildContext, flattenParts, normalizeSettings, pickChoice, fillTemplate, renderTitle, joinCompound, morphemesOf, isBlockedEngineWord, matcherFor, parsePattern, TEMPLATES, VOCAB,
   type Choice, type Context, type GameData, type RecipePart, type Settings, type Template,
 } from '../src/index';
 import { MINI } from '../../data/test/fixtures/mini-bundle';
@@ -226,4 +226,31 @@ test('pickChoice returns nothing when every choice is filtered out, and honours 
   assert.equal(pickChoice(c, createRng('none'), 'verbless' as never, { used: new Set() }), undefined);
   const rng = createRng('letter');
   for (let i = 0; i < 200; i++) assert.ok(pickChoice(c, rng, 'noun', { used: new Set(), letter: 'w' })!.text.toLowerCase().startsWith('w'));
+});
+
+test('flattenParts opens groups, and does the work once per recipe', () => {
+  const lex = (index: number, text: string): RecipePart => ({ kind: 'lex', index, slot: 'noun', entryId: text.toLowerCase(), text });
+  const inner: RecipePart[] = [lex(0, 'Ash'), { kind: 'literal', text: ' and ' }, lex(1, 'Oath')];
+  const plain: RecipePart[] = [lex(0, 'Crown'), { kind: 'literal', text: ' of ' }, lex(1, 'Ash')];
+  assert.equal(flattenParts(plain), plain, 'a recipe without groups is returned as it is');
+  const grouped: RecipePart[] = [lex(0, 'Wolf'), { kind: 'literal', text: ': ' }, { kind: 'group', index: 2, slot: 'subtitle', parts: inner, text: 'Ash and Oath' }];
+  const flat = flattenParts(grouped);
+  assert.deepEqual(flat.map(p => (p.kind === 'group' ? 'group' : p.text)), ['Wolf', ': ', 'Ash', ' and ', 'Oath']);
+  assert.equal(flattenParts(grouped), flat, 'the same list is returned on the next call');
+  const nested: RecipePart[] = [{ kind: 'group', index: 0, slot: 'subtitle', parts: grouped, text: '' }];
+  assert.deepEqual(flattenParts(nested).map(p => (p.kind === 'group' ? 'group' : p.text)), ['Wolf', ': ', 'Ash', ' and ', 'Oath']);
+  assert.deepEqual(flattenParts([]), []);
+});
+
+test('isBlockedEngineWord keeps its verdict for a repeated word, and the coined flag is part of the question', () => {
+  const c = ctx({});
+  for (let i = 0; i < 3; i++) {
+    assert.equal(isBlockedEngineWord(c, 'Jedimar'), false);
+    assert.equal(isBlockedEngineWord(c, 'Jedimar', true), true);
+    assert.equal(isBlockedEngineWord(c, 'Thornfall', true), false);
+  }
+  // A new build starts with a clean memo: another genre guard blocks what the first context allowed.
+  const cozy = ctx({ genre: 'cozy' });
+  assert.equal(isBlockedEngineWord(c, 'Pocketmon'), false);
+  assert.equal(isBlockedEngineWord(cozy, 'Pocketmon'), true);
 });

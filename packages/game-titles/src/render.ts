@@ -23,8 +23,27 @@ export function joinCompound(head: string, tail: string): string {
   return tripled || hardSeam ? `${h}-${capitalizeFirst(t)}` : h + t;
 }
 
-export function flattenParts(parts: readonly RecipePart[]): RecipePart[] {
-  return parts.flatMap(p => (p.kind === 'group' ? flattenParts(p.parts) : [p]));
+const flattened = new WeakMap<readonly RecipePart[], readonly RecipePart[]>();
+
+/**
+ * The parts with groups opened up. A recipe is read this way many times (constraints, caps, score, notes), so a list
+ * with no group is returned as it is and a list with groups is flattened once. The result is read-only.
+ */
+export function flattenParts(parts: readonly RecipePart[]): readonly RecipePart[] {
+  let grouped = false;
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i].kind === 'group') {
+      grouped = true;
+      break;
+    }
+  }
+  if (!grouped) return parts;
+  let flat = flattened.get(parts);
+  if (!flat) {
+    flat = parts.flatMap(p => (p.kind === 'group' ? flattenParts(p.parts) : [p]));
+    flattened.set(parts, flat);
+  }
+  return flat;
 }
 
 /**

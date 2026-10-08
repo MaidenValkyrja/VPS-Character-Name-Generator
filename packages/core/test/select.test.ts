@@ -82,3 +82,34 @@ test('a deterministic 200-candidate pool selects the same keys as before', () =>
     assert.deepEqual(selectDiverse(pool200(), opts).map(c => c.key), expected[i], `config ${i}`);
   });
 });
+
+// ---- The optional report says whether the batch filled without dropping a limit ----
+
+test('the report says whether the batch filled without dropping a family or cap limit', () => {
+  const plenty = [cand('a', 3, 'x'), cand('b', 2, 'y'), cand('c', 1, 'z')];
+  const strict = { strict: false };
+  const out = selectDiverse(plenty, { ...open, count: 3, familyCap: () => 1 }, strict);
+  assert.equal(out.length, 3);
+  assert.equal(strict.strict, true);
+
+  const crowded = [cand('a', 3, 'x'), cand('b', 2, 'x'), cand('c', 1, 'x')];
+  const familyDropped = { strict: true };
+  assert.equal(selectDiverse(crowded, { ...open, count: 3, familyCap: () => 1 }, familyDropped).length, 3);
+  assert.equal(familyDropped.strict, false, 'the family cap had to give way');
+
+  const capped = [cand('a', 3, 'f', ['a'], ['word:ash']), cand('b', 2, 'f', ['b'], ['word:ash']), cand('c', 1)];
+  const capDropped = { strict: true };
+  selectDiverse(capped, { ...open, count: 3, capLimit: k => (k === 'word:ash' ? 1 : Infinity) }, capDropped);
+  assert.equal(capDropped.strict, false, 'the cap key had to give way');
+
+  const short = { strict: true };
+  assert.equal(selectDiverse([cand('a', 1)], { ...open, count: 3 }, short).length, 1);
+  assert.equal(short.strict, false, 'a short batch is not a strict fill');
+});
+
+test('passing a report does not change what is picked', () => {
+  const rng = createRng('report');
+  const pool = Array.from({ length: 80 }, (_, i) => cand(`k${i}`, rng(), `f${i % 4}`, [`a${i % 7}`, `b${i % 5}`, `k${i}`], [`word:w${i % 9}`]));
+  const o: SelectOptions = { count: 12, diversity: 0.6, familyCap: () => 4, capLimit: k => (k.startsWith('word:') ? 2 : Infinity) };
+  assert.deepEqual(selectDiverse(pool, o, { strict: false }).map(c => c.key), selectDiverse(pool, o).map(c => c.key));
+});

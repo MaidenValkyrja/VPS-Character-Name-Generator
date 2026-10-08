@@ -136,3 +136,17 @@ test('the ASCII path keeps the cases the fold treats specially', () => {
     assert.equal(normalize(s), referenceNormalize(s), JSON.stringify(s));
   }
 });
+
+test('lemmaCandidates gives the same answer on every call, including after its memo fills and clears', () => {
+  const first = new Map<string, string[]>();
+  for (let i = 0; i < 6200; i++) {
+    const w = `Raven${i.toString(36)}ies`;
+    const got = [...lemmaCandidates(w)];
+    assert.ok(got.includes(w.toLowerCase()) && got.includes(`${w.toLowerCase().slice(0, -3)}y`), w);
+    if (i < 50) first.set(w, got);
+  }
+  for (const [w, got] of first) assert.deepEqual([...lemmaCandidates(w)], got, w);
+  assert.ok(lemmaCandidates('Wolves').includes('wolf') && lemmaCandidates('Wolves')[0] === 'wolves');
+  assert.ok(lemmaCandidates('Frozen').includes('freeze') && lemmaCandidates('Frozen')[0] === 'frozen');
+  assert.equal(lemmaCandidates('ravens'), lemmaCandidates('ravens'), 'a repeated word returns the shared result');
+});
