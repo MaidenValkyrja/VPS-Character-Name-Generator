@@ -71,3 +71,55 @@ export function violatesAvoid(title: string, morphemes: readonly string[], rules
   }
   return undefined;
 }
+
+/** One piece of text with its words prepared once, so many rule sets can be tested against it cheaply. */
+export interface AvoidText {
+  /** Canonical words: normalised, split on spaces and hyphens, possessives removed. */
+  readonly tokens: readonly string[];
+  /** Every token plus its plausible base forms. */
+  readonly lemmas: readonly string[];
+  /** " word word " for whole-phrase tests. */
+  readonly spaced: string;
+}
+
+export function prepareAvoidText(text: string): AvoidText {
+  const tokens = canonicalWords(text);
+  const lemmas = new Set<string>();
+  for (const t of tokens) for (const l of lemmaCandidates(t)) lemmas.add(l);
+  return { tokens, lemmas: [...lemmas], spaced: ` ${tokens.join(' ')} ` };
+}
+
+/**
+ * Compiles rules into one matcher over prepared text. For any text it agrees with
+ * `violatesAvoid(text, [text], rules)`; it returns undefined when there are no rules.
+ */
+export function compileAvoid(rules: readonly AvoidRule[]): ((text: AvoidText) => boolean) | undefined {
+  if (rules.length === 0) return undefined;
+  const words = new Set<string>();
+  const phrases: string[] = [];
+  const prefixes: string[] = [];
+  const suffixes: string[] = [];
+  const parts: string[] = [];
+  for (const rule of rules) {
+    switch (rule.kind) {
+      case 'word': words.add(rule.value); break;
+      case 'phrase': phrases.push(` ${rule.value} `); break;
+      case 'prefix': prefixes.push(rule.value); break;
+      case 'suffix': suffixes.push(rule.value); break;
+      case 'contains': parts.push(rule.value); break;
+    }
+  }
+  const perToken = prefixes.length + suffixes.length + parts.length > 0;
+  return text => {
+    if (words.size > 0) for (const l of text.lemmas) if (words.has(l)) return true;
+    for (const p of phrases) if (text.spaced.includes(p)) return true;
+    if (perToken) {
+      for (const t of text.tokens) {
+        for (const p of prefixes) if (t.startsWith(p)) return true;
+        for (const p of suffixes) if (t.endsWith(p)) return true;
+        for (const p of parts) if (t.includes(p)) return true;
+      }
+    }
+    return false;
+  };
+}

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createRng } from '@vps-name-tools/core';
+import { compileAvoid, createRng, parseAvoid, prepareAvoidText, violatesAvoid } from '@vps-name-tools/core';
 import { buildContext, normalizeSettings, type Context, type Settings } from '../src/index';
 import { MINI } from '../../data/test/fixtures/mini-bundle';
 import { MINI_GAME } from './fixtures/mini-game';
@@ -249,4 +249,64 @@ test('Avoid on a singular word also removes its irregular plural form', () => {
   assert.equal(entryIn(c, 'wolf', 'nounPl'), undefined);
   assert.ok(entryIn(ctx({}), 'wolf', 'nounPl'));
   assert.ok(entryIn(ctx({}), 'wolf'));
+});
+
+// ---- Avoid is compiled once per build and must match violatesAvoid(text, [text], rules) exactly ----
+
+const AVOID_INPUTS = [
+  'wolf', 'wolves', 'ravens', "raven's", 'frost-bound', 'frost-', '-fall', 'ash*', '*ar*', '"frost"', '"stone heart"',
+  'memories', 'ASH', '\u00c1sh', 'oath, vow; pact', 'sky, *star*, hold-', "o'clock, ash's", 'ice*, *ice', 'bury; kindle', 'little, hollow, pale',
+];
+
+const everyText = (): string[] => {
+  const texts = new Set<string>(['', ' ', 'Frost-bound', 'Stone Heart', "Raven's Hollow", 'The Memories', 'Ashfall', 'ICE AGE']);
+  for (const e of MINI.lexicon) {
+    for (const t of [e.text, e.text.toLowerCase(), e.forms?.plural, e.forms?.adj]) if (t) texts.add(t);
+  }
+  for (const list of Object.values(MINI_GAME.vocab)) for (const v of list) texts.add(typeof v === 'string' ? v : v.text);
+  return [...texts];
+};
+
+test('the compiled Avoid matcher agrees with violatesAvoid on every text', () => {
+  const texts = everyText();
+  for (const input of AVOID_INPUTS) {
+    const rules = parseAvoid(input);
+    const matches = compileAvoid(rules)!;
+    assert.ok(matches, input);
+    for (const text of texts) {
+      assert.equal(matches(prepareAvoidText(text)), !!violatesAvoid(text, [text], rules), `${JSON.stringify(input)} on ${JSON.stringify(text)}`);
+    }
+  }
+  assert.equal(compileAvoid([]), undefined);
+});
+
+test('the Avoid-filtered pools drop exactly the forms violatesAvoid rejects', () => {
+  const keys = (c: Context) => {
+    const out = new Map<string, string>();
+    for (const [slot, list] of c.flatPools) for (const ch of list) out.set(`${slot}|${ch.entry.id}|${ch.text}`, ch.text);
+    return out;
+  };
+  const all = keys(ctx({}));
+  assert.ok(all.size > 100);
+  for (const input of AVOID_INPUTS) {
+    const rules = parseAvoid(input);
+    const kept = keys(ctx({ avoid: input }));
+    const expectedKept = new Set([...all].filter(([, text]) => !violatesAvoid(text, [text], rules)).map(([k]) => k));
+    assert.deepEqual([...kept.keys()].sort(), [...expectedKept].sort(), input);
+    const vocabAll = ctx({}).vocab;
+    for (const [slot, list] of ctx({ avoid: input }).vocab) {
+      const expected = vocabAll.get(slot)!.map(w => w.item.text).filter(t => !violatesAvoid(t, [t], rules));
+      assert.deepEqual(list.map(w => w.item.text), expected, `${input} ${slot}`);
+    }
+  }
+});
+
+test('a blocked context is cheap but fully defined', () => {
+  const c = ctx({ include: 'Ash', avoid: 'ash' });
+  assert.equal(c.blocked, true);
+  assert.equal(c.templates.length, 0);
+  assert.equal(c.pools.size, 0);
+  for (const f of [c.flatPools, c.vocab, c.anchors, c.avoid, c.boost, c.entryById, c.related]) assert.ok(f);
+  assert.equal(typeof c.entryRelevance(MINI.lexicon[0]), 'number');
+  assert.equal(c.conceptLabel('fire'), 'fire');
 });

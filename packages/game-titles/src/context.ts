@@ -1,6 +1,7 @@
 import {
-  lemmaCandidates, normalize, parseAvoid, parseThemes, pluralize, sanitizeInput, temper, titleCase, violatesAvoid,
-  type AvoidRule, type PhoneticProfile, type PhraseRole, type Rng, type SteeringIndex, type ThemeProfile, type Weighted,
+  compileAvoid, lemmaCandidates, normalize, parseAvoid, parseThemes, pluralize, prepareAvoidText, sanitizeInput, temper, titleCase,
+  violatesAvoid,
+  type AvoidRule, type AvoidText, type PhoneticProfile, type PhraseRole, type Rng, type SteeringIndex, type ThemeProfile, type Weighted,
 } from '@vps-name-tools/core';
 import { buildSteeringIndex, type DataBundle, type LexEntry, type MythPack, type ToneDef } from '@vps-name-tools/data';
 import { CREATIVITY, type CreativityParams, type Settings } from './settings';
@@ -69,20 +70,117 @@ export function slotForRole(types: readonly SlotType[], role: PhraseRole): SlotT
   return ROLE_SLOTS[role].find(t => types.includes(t));
 }
 
-const indexCache = new WeakMap<DataBundle, WeakMap<GameData, SteeringIndex>>();
-export function steeringIndexFor(data: DataBundle, game: GameData): SteeringIndex {
-  let byGame = indexCache.get(data);
+/** A piece of text prepared once for Avoid matching, with the verdict of the latest build that asked. */
+interface Probe {
+  readonly text: AvoidText;
+  stamp: number;
+  hit: boolean;
+}
+
+/** One place an entry can appear in a pool: the shared Choice, and its Avoid probe once someone asks. */
+interface Form {
+  readonly slot: LexSlot;
+  readonly choice: Choice;
+  probe?: Probe;
+}
+
+/** An entry's settings-independent pool forms. */
+interface EntryRec {
+  readonly entry: LexEntry;
+  readonly bonus: number;
+  /** Normalised text, for the cliche lift. */
+  readonly norm: string;
+  readonly forms: readonly Form[];
+}
+
+/** Everything about a bundle and game that does not depend on the settings. Built once, reused by every call. */
+interface BundleCache {
+  readonly index: SteeringIndex;
+  readonly entryById: ReadonlyMap<string, LexEntry>;
+  readonly related: ReadonlyMap<string, readonly string[]>;
+  readonly labels: ReadonlyMap<string, string>;
+  recsOf(list: readonly LexEntry[], source: Source): readonly EntryRec[];
+  probeOf(text: string): Probe;
+}
+
+const NO_ENTRIES: readonly LexEntry[] = [];
+
+function recFor(e: LexEntry, source: Source): EntryRec {
+  const forms: Form[] = [];
+  const add = (slot: LexSlot, text: string) => forms.push({ slot, choice: { entry: e, text, source } });
+  if (e.pos.includes('noun')) {
+    add('noun', e.text);
+    if (!e.mass) add('nounPl', e.forms?.plural ?? pluralize(e.text));
+    if (e.forms?.adj) add('adj', e.forms.adj);
+  }
+  if (e.pos.includes('adj')) add('adj', e.text);
+  if (e.pos.includes('verb')) add('verb', e.text);
+  if (e.pos.includes('abstract')) add('abstract', e.text);
+  if (e.pos.includes('place')) add('placeWord', e.text);
+  if (e.compound === 'head' || e.compound === 'both') add('compoundHead', e.text);
+  if (e.compound === 'tail' || e.compound === 'both') add('compoundTail', e.text.toLowerCase());
+  if (e.placeTail) add('placeTail', e.text.toLowerCase());
+  return { entry: e, bonus: SOURCE_BONUS[source], norm: normalize(e.text), forms };
+}
+
+function createCache(data: DataBundle, game: GameData): BundleCache {
+  const entryById = new Map<string, LexEntry>();
+  for (const e of [...data.lexicon, ...data.myths.flatMap(m => [...m.imagery, ...m.symbolic]), ...game.genres.flatMap(g => g.entries ?? [])]) entryById.set(e.id, e);
+  const recs = new Map<readonly LexEntry[], readonly EntryRec[]>();
+  const probes = new Map<string, Probe>();
+  const byCanon = new Map<string, Probe>();
+  return {
+    index: buildSteeringIndex(data, game.genres.flatMap(g => g.entries ?? [])),
+    entryById,
+    related: new Map(data.concepts.map(c => [c.id, c.related] as const)),
+    labels: new Map(data.concepts.map(c => [c.id, c.label] as const)),
+    recsOf(list, source) {
+      let out = recs.get(list);
+      if (!out) {
+        out = list.map(e => recFor(e, source));
+        recs.set(list, out);
+      }
+      return out;
+    },
+    probeOf(text) {
+      let probe = probes.get(text);
+      if (!probe) {
+        const prepared = prepareAvoidText(text);
+        // Texts that differ only in case or punctuation share one probe.
+        const canon = prepared.spaced;
+        probe = byCanon.get(canon);
+        if (!probe) {
+          probe = { text: prepared, stamp: 0, hit: false };
+          byCanon.set(canon, probe);
+        }
+        probes.set(text, probe);
+      }
+      return probe;
+    },
+  };
+}
+
+const bundleCaches = new WeakMap<DataBundle, WeakMap<GameData, BundleCache>>();
+function cacheFor(data: DataBundle, game: GameData): BundleCache {
+  let byGame = bundleCaches.get(data);
   if (!byGame) {
     byGame = new WeakMap();
-    indexCache.set(data, byGame);
+    bundleCaches.set(data, byGame);
   }
-  let index = byGame.get(game);
-  if (!index) {
-    index = buildSteeringIndex(data, game.genres.flatMap(g => g.entries ?? []));
-    byGame.set(game, index);
+  let cache = byGame.get(game);
+  if (!cache) {
+    cache = createCache(data, game);
+    byGame.set(game, cache);
   }
-  return index;
+  return cache;
 }
+
+export function steeringIndexFor(data: DataBundle, game: GameData): SteeringIndex {
+  return cacheFor(data, game).index;
+}
+
+/** Each build that has Avoid rules takes a fresh stamp, so a shared probe is evaluated once per build. */
+let buildStamp = 0;
 
 function classOf(t: Template): keyof LengthBias {
   const [lo, hi] = t.words;
@@ -165,20 +263,23 @@ export function buildContext(settings: Settings, data: DataBundle, game: GameDat
   const mythChain = chainMyths(data.myths, myth, params.crossMyth, rng);
   const style = settings.style === 'auto' ? undefined : game.styles.find(s => s.id === settings.style);
   const tones = resolveTones(settings, genre, data.tones);
-  const index = steeringIndexFor(data, game);
+  const cache = cacheFor(data, game);
+  const { index, entryById } = cache;
   const theme = parseThemes(settings.themes, index);
   const avoid = parseAvoid(settings.avoid);
+  const avoids = compileAvoid(avoid);
+  const stamp = ++buildStamp;
+  // True when the text matches an Avoid rule. Each distinct text is evaluated once per build.
+  const hits = (probe: Probe): boolean => {
+    if (!avoids) return false;
+    if (probe.stamp !== stamp) {
+      probe.stamp = stamp;
+      probe.hit = avoids(probe.text);
+    }
+    return probe.hit;
+  };
+  const avoided = (text: string): boolean => !!avoids && hits(cache.probeOf(text));
 
-  const sources: { entry: LexEntry; source: Source; weight: number }[] = [
-    ...data.lexicon.map(entry => ({ entry, source: 'core' as const, weight: 1 })),
-    ...genreChain.flatMap(({ preset, weight }) => (preset.entries ?? []).map(entry => ({ entry, source: 'genre' as const, weight }))),
-    ...mythChain.flatMap(({ pack, weight }) => [
-      ...pack.imagery.map(entry => ({ entry, source: 'myth' as const, weight })),
-      ...pack.symbolic.map(entry => ({ entry, source: 'symbolic' as const, weight })),
-    ]),
-  ];
-  const entryById = new Map<string, LexEntry>();
-  for (const e of [...data.lexicon, ...data.myths.flatMap(m => [...m.imagery, ...m.symbolic]), ...game.genres.flatMap(g => g.entries ?? [])]) entryById.set(e.id, e);
   const symbolicIds = new Set(mythChain.flatMap(({ pack }) => pack.symbolic.map(e => e.id)));
 
   const include = resolveInclude(settings.include, index, entryById);
@@ -205,11 +306,13 @@ export function buildContext(settings: Settings, data: DataBundle, game: GameDat
   const maxBoost = Math.max(2, ...boost.values());
 
   const liftedCliches = new Set<string>();
-  for (const w of normalize(`${settings.themes} ${settings.include}`).split(/[\s-]+/)) {
+  const typed = settings.themes || settings.include ? normalize(`${settings.themes} ${settings.include}`) : '';
+  for (const w of typed ? typed.split(/[\s-]+/) : []) {
     if (!w) continue;
     // Typed "echo" must lift "Echoes": pluralize() gives "echos", so words ending in "o" also take "-es".
     for (const form of [w, `${w}s`, pluralize(w), ...(w.endsWith('o') ? [`${w}es`] : []), ...lemmaCandidates(w)]) liftedCliches.add(form);
   }
+  const lifted = (norm: string): boolean => liftedCliches.size > 0 && liftedCliches.has(norm);
 
   const namedFamilies = new Set<string>();
   for (const id of theme.entryBoosts.keys()) {
@@ -231,16 +334,45 @@ export function buildContext(settings: Settings, data: DataBundle, game: GameDat
     return (max > 1 ? max : params.baseline) * (min < 1 ? min : 1);
   };
 
-  const entryWeight = (e: LexEntry, source: Source): number => {
+  // Sound bias: a tone chooses the profile (and its letter cap applies) only when neither a non-neutral
+  // cultural profile nor a non-neutral genre profile does.
+  const packProfile = myth.id !== 'none' && myth.profile !== 'neutral';
+  const toneBias = !packProfile && genre.profile === 'neutral';
+  const profileId = packProfile ? myth.profile : genre.profile !== 'neutral' ? genre.profile : tones[0]?.def.soundProfile ?? 'neutral';
+  const toneMax = toneBias ? tones[0]?.def.maxCoinedLetters : undefined;
+  const coinedLetters: readonly [number, number] | undefined = style?.brandLetters ?? (toneMax ? [3, toneMax] : undefined);
+  const profile = data.profiles.find(p => p.id === profileId) ?? data.profiles.find(p => p.id === 'neutral');
+  if (!profile) throw new Error('The neutral phonetic profile is required');
+  const coinedRate = Math.min(1, (style?.coinedRate ?? 0.2) * myth.coinedRate);
+  const coinedCap = style?.id === 'invented' ? 1 : Math.min(1, Math.max(params.coinedCap, style?.coinedRate ?? 0) * myth.coinedRate);
+  const alliterationBonus = tones.reduce((n, t) => n + (t.def.alliterationBonus ?? 0) * t.weight, 0);
+
+  const finish = (
+    pools: ReadonlyMap<LexSlot, readonly Weighted<Choice>[]>,
+    flatPools: ReadonlyMap<LexSlot, readonly Choice[]>,
+    vocab: ReadonlyMap<VocabSlot, readonly Weighted<VocabChoice>[]>,
+    templates: readonly Weighted<Template>[],
+    anchors: readonly Weighted<string>[],
+  ): Context => ({
+    settings, params, genre, genreChain, myth, mythChain, style, tones, theme, include, avoid, boost, userConcepts,
+    related: cache.related, pools, flatPools, vocab, templates, familiesAvailable: new Set(templates.map(x => x.item.family)).size,
+    anchors, profile, coinedLetters, coinedRate, coinedCap, liftedCliches, alliterationBonus, maxBoost, entryById, symbolicIds,
+    data, game, notices, blocked, entryRelevance, conceptLabel: id => cache.labels.get(id) ?? id,
+  });
+  // A blocked build generates nothing, so skip the pools: callers read only the notices and the flag.
+  if (blocked) return finish(new Map(), new Map(), new Map(), [], []);
+
+  const entryWeight = (rec: EntryRec): number => {
+    const e = rec.entry;
     const relevance = entryRelevance(e);
     if (relevance === 0) return 0;
-    let w = relevance * SOURCE_BONUS[source];
+    let w = relevance * rec.bonus;
     for (const { def, weight } of tones) w *= Math.max(0.1, 1 + (e.tones?.[def.id] ?? 0) * 0.8 * weight);
     w *= style?.register?.[e.register] ?? 1;
     const named = theme.entryBoosts.get(e.id);
     if (named) w *= named;
     else if (e.family && namedFamilies.has(e.family)) w *= 1.5;
-    const cliche = liftedCliches.has(normalize(e.text)) ? 0 : e.cliche ?? 0;
+    const cliche = lifted(rec.norm) ? 0 : e.cliche ?? 0;
     return w * (1 - 0.6 * cliche);
   };
 
@@ -248,37 +380,40 @@ export function buildContext(settings: Settings, data: DataBundle, game: GameDat
   const flatPools = new Map<LexSlot, Choice[]>();
   let nounsSeen = 0;
   let nounsAvoided = 0;
-  const push = (slot: LexSlot, choice: Choice, weight: number) => {
-    if (slot === 'noun') nounsSeen++;
-    if (violatesAvoid(choice.text, [choice.text], avoid)) {
-      if (slot === 'noun') nounsAvoided++;
-      return;
+  // Weights are tempered as they are pooled: the same power transform as temper(), without a second pass.
+  const power = 1 / params.temperature;
+  const lists: { recs: readonly EntryRec[]; weight: number }[] = [
+    { recs: cache.recsOf(data.lexicon, 'core'), weight: 1 },
+    ...genreChain.map(({ preset, weight }) => ({ recs: cache.recsOf(preset.entries ?? NO_ENTRIES, 'genre'), weight })),
+    ...mythChain.flatMap(({ pack, weight }) => [
+      { recs: cache.recsOf(pack.imagery, 'myth'), weight },
+      { recs: cache.recsOf(pack.symbolic, 'symbolic'), weight },
+    ]),
+  ];
+  for (const { recs, weight: chainWeight } of lists) {
+    for (const rec of recs) {
+      const w = entryWeight(rec) * chainWeight;
+      if (w <= 0) continue;
+      const pooled = power === 1 ? w : Math.pow(w, power);
+      for (const f of rec.forms) {
+        if (f.slot === 'noun') nounsSeen++;
+        if (avoids && hits((f.probe ??= cache.probeOf(f.choice.text)))) {
+          if (f.slot === 'noun') nounsAvoided++;
+          continue;
+        }
+        let pool = pools.get(f.slot);
+        let flat = flatPools.get(f.slot);
+        if (!pool || !flat) {
+          pool = [];
+          flat = [];
+          pools.set(f.slot, pool);
+          flatPools.set(f.slot, flat);
+        }
+        pool.push({ item: f.choice, weight: pooled });
+        flat.push(f.choice);
+      }
     }
-    if (!pools.has(slot)) {
-      pools.set(slot, []);
-      flatPools.set(slot, []);
-    }
-    pools.get(slot)!.push({ item: choice, weight });
-    flatPools.get(slot)!.push(choice);
-  };
-  for (const { entry: e, source, weight: chainWeight } of sources) {
-    const w = entryWeight(e, source) * chainWeight;
-    if (w <= 0) continue;
-    const make = (text: string): Choice => ({ entry: e, text, source });
-    if (e.pos.includes('noun')) {
-      push('noun', make(e.text), w);
-      if (!e.mass) push('nounPl', make(e.forms?.plural ?? pluralize(e.text)), w);
-      if (e.forms?.adj) push('adj', make(e.forms.adj), w);
-    }
-    if (e.pos.includes('adj')) push('adj', make(e.text), w);
-    if (e.pos.includes('verb')) push('verb', make(e.text), w);
-    if (e.pos.includes('abstract')) push('abstract', make(e.text), w);
-    if (e.pos.includes('place')) push('placeWord', make(e.text), w);
-    if (e.compound === 'head' || e.compound === 'both') push('compoundHead', make(e.text), w);
-    if (e.compound === 'tail' || e.compound === 'both') push('compoundTail', make(e.text.toLowerCase()), w);
-    if (e.placeTail) push('placeTail', make(e.text.toLowerCase()), w);
   }
-  for (const [slot, list] of pools) pools.set(slot, temper(list, params.temperature));
   if (nounsSeen > 0 && nounsAvoided / nounsSeen > 0.5) notices.push({ code: 'pool-limited', message: 'Some options are limited by your Avoid list.' });
 
   // Genre tags and frame words lift x3 for the chosen genre and x2 for its parent: 1 + (3 - 1) * chain weight.
@@ -306,15 +441,15 @@ export function buildContext(settings: Settings, data: DataBundle, game: GameDat
       w *= (max > 1 ? max : 0.6) * (min < 1 ? min : 1);
     }
     for (const { def, weight } of tones) w *= Math.max(0.1, 1 + (v.tones?.[def.id] ?? 0) * 0.8 * weight);
-    const cliche = liftedCliches.has(normalize(v.text)) ? 0 : v.cliche ?? 0;
+    const cliche = lifted(normalize(v.text)) ? 0 : v.cliche ?? 0;
     return w * (1 - 0.6 * cliche);
   };
   const vocabPool = (items: readonly { readonly v: VocabItem; readonly scale: number }[], slot: VocabSlot): Weighted<VocabChoice>[] =>
     temper(
       items
-        .filter(({ v }) => !violatesAvoid(v.text, [v.text], avoid))
+        .filter(({ v }) => !avoided(v.text))
         .map(({ v, scale }) => ({
-          item: { text: v.text, concepts: v.concepts ?? [], cliche: liftedCliches.has(normalize(v.text)) ? 0 : v.cliche ?? 0 },
+          item: { text: v.text, concepts: v.concepts ?? [], cliche: lifted(normalize(v.text)) ? 0 : v.cliche ?? 0 },
           weight: vocabWeight(v, slot) * scale,
         })),
       params.temperature,
@@ -357,28 +492,7 @@ export function buildContext(settings: Settings, data: DataBundle, game: GameDat
     return w * lengthWeight(t, settings.length, genre.lengthBias);
   };
   const templates = game.templates.map(t => ({ item: t, weight: templateWeight(t) })).filter(x => x.weight > 0);
-  const familiesAvailable = new Set(templates.map(x => x.item.family)).size;
 
   const anchors = [...boost.entries()].filter(([, b]) => b > 1).map(([c, b]) => ({ item: c, weight: b * (userConcepts.has(c) ? 2 : 1) }));
-  // Sound bias: a tone chooses the profile (and its letter cap applies) only when neither a non-neutral
-  // cultural profile nor a non-neutral genre profile does.
-  const packProfile = myth.id !== 'none' && myth.profile !== 'neutral';
-  const toneBias = !packProfile && genre.profile === 'neutral';
-  const profileId = packProfile ? myth.profile : genre.profile !== 'neutral' ? genre.profile : tones[0]?.def.soundProfile ?? 'neutral';
-  const toneMax = toneBias ? tones[0]?.def.maxCoinedLetters : undefined;
-  const coinedLetters: readonly [number, number] | undefined = style?.brandLetters ?? (toneMax ? [3, toneMax] : undefined);
-  const profile = data.profiles.find(p => p.id === profileId) ?? data.profiles.find(p => p.id === 'neutral');
-  if (!profile) throw new Error('The neutral phonetic profile is required');
-  const coinedRate = Math.min(1, (style?.coinedRate ?? 0.2) * myth.coinedRate);
-  const coinedCap = style?.id === 'invented' ? 1 : Math.min(1, Math.max(params.coinedCap, style?.coinedRate ?? 0) * myth.coinedRate);
-  const alliterationBonus = tones.reduce((n, t) => n + (t.def.alliterationBonus ?? 0) * t.weight, 0);
-  const related = new Map(data.concepts.map(c => [c.id, c.related] as const));
-  const labels = new Map(data.concepts.map(c => [c.id, c.label] as const));
-
-  return {
-    settings, params, genre, genreChain, myth, mythChain, style, tones, theme, include, avoid, boost, userConcepts, related,
-    pools, flatPools, vocab, templates, familiesAvailable, anchors, profile, coinedLetters, coinedRate, coinedCap, liftedCliches,
-    alliterationBonus, maxBoost, entryById, symbolicIds, data, game, notices, blocked, entryRelevance,
-    conceptLabel: id => labels.get(id) ?? id,
-  };
+  return finish(pools, flatPools, vocab, templates, anchors);
 }
