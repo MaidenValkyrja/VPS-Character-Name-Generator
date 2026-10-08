@@ -16,3 +16,5 @@ export * from './render';
 export * from './fill';
 export * from './constraints';
 export * from './score';
+export * from './notes';
+export * from './generate';
