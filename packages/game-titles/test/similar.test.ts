@@ -268,3 +268,33 @@ test('the kept head entry is exempt in another surface form, such as its plural'
   assert.ok(!kept.capKeys.includes(`head:@${head.entryId}`));
   assert.ok(!kept.capKeys.includes(`word:@${head.entryId}`));
 });
+
+test('a source whose head is a theme phrase gets 6 results with no lexicon entry used more than twice', () => {
+  const sources = ['u1', 'u2', 'u3', 'u4'].flatMap(seed => run({ themes: 'lantern', count: 20 }, seed).titles).filter(t => headPart(t)?.kind === 'user');
+  assert.ok(sources.length >= 2, `${sources.length} theme-phrase sources`);
+  const used = (t: TitleResult) => new Set(t.recipe.parts.flatMap(p => (p.kind === 'lex' ? [p.entryId] : p.kind === 'compound' ? [p.headId, p.tailId] : [])));
+  let kept = 0;
+  for (const src of sources.slice(0, 4)) {
+    for (let i = 0; i < 10; i++) {
+      const r = generateSimilar(src, { ...opts, seed: `ph${i}` });
+      assert.equal(r.titles.length, 6, `${src.title} / ph${i}: ${r.titles.map(t => t.title)}`);
+      const counts = new Map<string, number>();
+      for (const t of r.titles) for (const id of used(t)) counts.set(id, (counts.get(id) ?? 0) + 1);
+      for (const [id, n] of counts) assert.ok(n <= 2, `${src.title} / ph${i}: ${id} in ${n} results: ${r.titles.map(t => t.title)}`);
+      if (r.titles.some(t => t.recipe.parts.some(p => p.kind === 'user'))) kept++;
+    }
+  }
+  assert.ok(kept > 0, 'some results keep the theme phrase');
+});
+
+test('the kept theme phrase is exempt from the literal limit', () => {
+  const ctx = buildContext(normalizeSettings({ themes: 'lantern', count: 10 }), MINI, MINI_GAME, createRng('kept3'));
+  const src = ['u1', 'u2', 'u3', 'u4'].flatMap(seed => run({ themes: 'lantern', count: 20 }, seed).titles).find(t => headPart(t)?.kind === 'user')!;
+  assert.ok(src, 'a theme-phrase source');
+  const head = headPart(src) as Exclude<RecipePart, { kind: 'literal' }>;
+  const before = toCandidate(ctx, src.title, src.recipe, 0);
+  assert.ok(before.capKeys.includes('literal'));
+  const after = exemptKeptHead(before, keptHeadOf(head));
+  assert.ok(!after.capKeys.includes('literal'));
+  assert.ok(!after.capKeys.some(k => k.startsWith('phrase:')));
+});

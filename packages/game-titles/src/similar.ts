@@ -179,6 +179,7 @@ export function keptHeadOf(head: Head | undefined): KeptHead | undefined {
       break;
     case 'user':
       keys.add(`phrase:${head.phrase}`);
+      keys.add('literal');
       break;
     case 'include':
       break;
