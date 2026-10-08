@@ -196,8 +196,10 @@ export function buildContext(settings: Settings, data: DataBundle, game: GameDat
   for (const { preset, weight } of genreChain) for (const [c, v] of Object.entries(preset.conceptBoosts)) mul(c, v, weight);
   for (const { pack, weight } of mythChain) for (const [c, v] of Object.entries(pack.conceptBoosts)) mul(c, v, weight);
   for (const { def, weight } of tones) for (const [c, v] of Object.entries(def.conceptBoosts)) mul(c, v, weight);
-  for (const [c, v] of theme.conceptBoosts) mul(c, v, 1);
   const userConcepts = new Set(theme.conceptBoosts.keys());
+  // A concept the user typed starts over at 1 when a tone or pack zeroed it: the user's identity wins.
+  for (const c of userConcepts) if (boost.get(c) === 0) boost.set(c, 1);
+  for (const [c, v] of theme.conceptBoosts) mul(c, v, 1);
   const suppressed = new Set(genreChain.flatMap(g => g.preset.suppress ?? []).filter(c => !userConcepts.has(c)));
   for (const c of suppressed) boost.set(c, 0);
   const maxBoost = Math.max(2, ...boost.values());
@@ -205,7 +207,8 @@ export function buildContext(settings: Settings, data: DataBundle, game: GameDat
   const liftedCliches = new Set<string>();
   for (const w of normalize(`${settings.themes} ${settings.include}`).split(/[\s-]+/)) {
     if (!w) continue;
-    for (const form of [w, `${w}s`, ...lemmaCandidates(w)]) liftedCliches.add(form);
+    // Typed "echo" must lift "Echoes": pluralize() gives "echos", so words ending in "o" also take "-es".
+    for (const form of [w, `${w}s`, pluralize(w), ...(w.endsWith('o') ? [`${w}es`] : []), ...lemmaCandidates(w)]) liftedCliches.add(form);
   }
 
   const namedFamilies = new Set<string>();
@@ -217,12 +220,15 @@ export function buildContext(settings: Settings, data: DataBundle, game: GameDat
   const entryRelevance = (e: LexEntry): number => {
     const named = theme.entryBoosts.has(e.id);
     let max = 0;
+    let min = Infinity;
     for (const c of e.concepts) {
-      if (suppressed.has(c) && !named) return 0;
-      max = Math.max(max, boost.get(c) ?? 1);
+      const b = boost.get(c) ?? 1;
+      if (b === 0 && !named) return 0;
+      max = Math.max(max, b);
+      min = Math.min(min, b);
     }
     if (named) return Math.max(max, 1);
-    return max > 1 ? max : params.baseline;
+    return (max > 1 ? max : params.baseline) * (min < 1 ? min : 1);
   };
 
   const entryWeight = (e: LexEntry, source: Source): number => {
@@ -275,48 +281,68 @@ export function buildContext(settings: Settings, data: DataBundle, game: GameDat
   for (const [slot, list] of pools) pools.set(slot, temper(list, params.temperature));
   if (nounsSeen > 0 && nounsAvoided / nounsSeen > 0.5) notices.push({ code: 'pool-limited', message: 'Some options are limited by your Avoid list.' });
 
-  const genreIds = new Set<string>(genreChain.map(g => g.preset.id));
-  const frameWords = new Set(genreChain.flatMap(g => g.preset.frameWords ?? []));
+  // Genre tags and frame words lift x3 for the chosen genre and x2 for its parent: 1 + (3 - 1) * chain weight.
+  const genreWeight = new Map<string, number>(genreChain.map(g => [g.preset.id, g.weight]));
+  const frameWordWeight = new Map<string, number>();
+  for (const { preset, weight } of genreChain) {
+    for (const word of preset.frameWords ?? []) frameWordWeight.set(word, Math.max(frameWordWeight.get(word) ?? 0, weight));
+  }
   const vocabWeight = (v: VocabItem, slot: VocabSlot): number => {
     let w = 1;
-    if (v.genres?.some(id => genreIds.has(id))) w *= 3;
-    if (slot === 'frame' && frameWords.has(v.text)) w *= 3;
+    let tag = 0;
+    for (const id of v.genres ?? []) tag = Math.max(tag, genreWeight.get(id) ?? 0);
+    if (tag > 0) w *= 1 + 2 * tag;
+    const framed = slot === 'frame' ? frameWordWeight.get(v.text) : undefined;
+    if (framed) w *= 1 + 2 * framed;
     if (v.concepts?.length) {
-      let r = 0;
+      let max = 0;
+      let min = Infinity;
       for (const c of v.concepts) {
         const b = boost.get(c) ?? 1;
         if (b === 0) return 0;
-        r = Math.max(r, b);
+        max = Math.max(max, b);
+        min = Math.min(min, b);
       }
-      w *= r > 1 ? r : 0.6;
+      w *= (max > 1 ? max : 0.6) * (min < 1 ? min : 1);
     }
     for (const { def, weight } of tones) w *= Math.max(0.1, 1 + (v.tones?.[def.id] ?? 0) * 0.8 * weight);
     const cliche = liftedCliches.has(normalize(v.text)) ? 0 : v.cliche ?? 0;
     return w * (1 - 0.6 * cliche);
   };
-  const vocabPool = (items: readonly VocabItem[], slot: VocabSlot): Weighted<VocabChoice>[] =>
+  const vocabPool = (items: readonly { readonly v: VocabItem; readonly scale: number }[], slot: VocabSlot): Weighted<VocabChoice>[] =>
     temper(
       items
-        .filter(v => !violatesAvoid(v.text, [v.text], avoid))
-        .map(v => ({
+        .filter(({ v }) => !violatesAvoid(v.text, [v.text], avoid))
+        .map(({ v, scale }) => ({
           item: { text: v.text, concepts: v.concepts ?? [], cliche: liftedCliches.has(normalize(v.text)) ? 0 : v.cliche ?? 0 },
-          weight: vocabWeight(v, slot),
+          weight: vocabWeight(v, slot) * scale,
         })),
       params.temperature,
     );
+  const plain = (items: readonly VocabItem[]) => items.map(v => ({ v, scale: 1 }));
   const V = game.vocab;
-  const genreSuffixes = genreChain.flatMap(g => g.preset.suffixWords ?? []);
+  // Suffix words: the chosen genre's first, then each parent's that are not already present, at the parent's chain weight.
+  const genreSuffixes: { v: VocabItem; scale: number }[] = [];
+  const seenSuffixes = new Set<string>();
+  for (const { preset, weight } of genreChain) {
+    for (const v of preset.suffixWords ?? []) {
+      const key = normalize(v.text);
+      if (seenSuffixes.has(key)) continue;
+      seenSuffixes.add(key);
+      genreSuffixes.push({ v, scale: weight });
+    }
+  }
   const wantsFranchise = style?.id === 'franchise' || tones.some(t => t.def.id === 'retro') || genreSuffixes.length === 0;
   const vocab = new Map<VocabSlot, Weighted<VocabChoice>[]>([
-    ['frame', vocabPool(V.frames, 'frame')],
-    ['frameSuffix', vocabPool(V.frameSuffixes, 'frameSuffix')],
-    ['genreSuffix', vocabPool(wantsFranchise ? [...genreSuffixes, ...V.franchiseSuffixes] : genreSuffixes, 'genreSuffix')],
-    ['number', vocabPool(V.numbers, 'number')],
-    ['ordinal', vocabPool(V.ordinals, 'ordinal')],
-    ['digits', vocabPool(V.digits, 'digits')],
-    ['prep', vocabPool(V.preps, 'prep')],
-    ['predicate', vocabPool(V.predicates, 'predicate')],
-    ['epithet', vocabPool(V.epithets, 'epithet')],
+    ['frame', vocabPool(plain(V.frames), 'frame')],
+    ['frameSuffix', vocabPool(plain(V.frameSuffixes), 'frameSuffix')],
+    ['genreSuffix', vocabPool(wantsFranchise ? [...genreSuffixes, ...plain(V.franchiseSuffixes)] : genreSuffixes, 'genreSuffix')],
+    ['number', vocabPool(plain(V.numbers), 'number')],
+    ['ordinal', vocabPool(plain(V.ordinals), 'ordinal')],
+    ['digits', vocabPool(plain(V.digits), 'digits')],
+    ['prep', vocabPool(plain(V.preps), 'prep')],
+    ['predicate', vocabPool(plain(V.predicates), 'predicate')],
+    ['epithet', vocabPool(plain(V.epithets), 'epithet')],
   ]);
 
   const templateWeight = (t: Template): number => {
@@ -334,9 +360,12 @@ export function buildContext(settings: Settings, data: DataBundle, game: GameDat
   const familiesAvailable = new Set(templates.map(x => x.item.family)).size;
 
   const anchors = [...boost.entries()].filter(([, b]) => b > 1).map(([c, b]) => ({ item: c, weight: b * (userConcepts.has(c) ? 2 : 1) }));
-  // Sound bias: a tone may choose the profile only when neither the cultural style nor the genre does.
-  const profileId = myth.id !== 'none' ? myth.profile : genre.profile !== 'neutral' ? genre.profile : tones[0]?.def.soundProfile ?? 'neutral';
-  const toneMax = tones[0]?.def.maxCoinedLetters;
+  // Sound bias: a tone chooses the profile (and its letter cap applies) only when neither a non-neutral
+  // cultural profile nor a non-neutral genre profile does.
+  const packProfile = myth.id !== 'none' && myth.profile !== 'neutral';
+  const toneBias = !packProfile && genre.profile === 'neutral';
+  const profileId = packProfile ? myth.profile : genre.profile !== 'neutral' ? genre.profile : tones[0]?.def.soundProfile ?? 'neutral';
+  const toneMax = toneBias ? tones[0]?.def.maxCoinedLetters : undefined;
   const coinedLetters: readonly [number, number] | undefined = style?.brandLetters ?? (toneMax ? [3, toneMax] : undefined);
   const profile = data.profiles.find(p => p.id === profileId) ?? data.profiles.find(p => p.id === 'neutral');
   if (!profile) throw new Error('The neutral phonetic profile is required');
