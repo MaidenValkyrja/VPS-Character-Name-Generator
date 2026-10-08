@@ -40,7 +40,7 @@ export interface Context {
   readonly profile: PhoneticProfile;
   /** Letter range for invented words: the style's brand range, else the primary tone's cap. */
   readonly coinedLetters?: readonly [number, number];
-  /** Chance that a name slot becomes an invented word. */
+  /** Chance that a name slot becomes an invented word: the style's rate, else the creativity level's cap. */
   readonly coinedRate: number;
   /** Largest share of a batch that may be invented words. */
   readonly coinedCap: number;
@@ -201,6 +201,31 @@ export function lengthWeight(t: Template, length: LengthOption, bias: LengthBias
   }
 }
 
+/** Focused: the share of the template weight kept, and the fewest templates and families it may narrow to. */
+const FOCUSED_COVERAGE = 0.8;
+const FOCUSED_MIN_TEMPLATES = 8;
+const FOCUSED_MIN_FAMILIES = 4;
+
+/**
+ * The highest-weighted templates: the shortest prefix, by weight, that covers 80% of the total weight, extended until
+ * it holds at least 8 templates and 4 families (or every template is in). The list keeps its order.
+ */
+export function narrowTemplates(all: readonly Weighted<Template>[]): readonly Weighted<Template>[] {
+  if (all.length <= FOCUSED_MIN_TEMPLATES) return all;
+  const byWeight = all.map((_, i) => i).sort((a, b) => all[b].weight - all[a].weight || a - b);
+  const total = all.reduce((n, w) => n + w.weight, 0);
+  const families = new Set<string>();
+  let covered = 0;
+  let n = 0;
+  while (n < byWeight.length && (covered < FOCUSED_COVERAGE * total || n < FOCUSED_MIN_TEMPLATES || families.size < FOCUSED_MIN_FAMILIES)) {
+    const w = all[byWeight[n++]];
+    covered += w.weight;
+    families.add(w.item.family);
+  }
+  const keep = new Set(byWeight.slice(0, n));
+  return all.filter((_, i) => keep.has(i));
+}
+
 const usable = (m: MythPack | undefined): m is MythPack => !!m && m.review.status !== 'held';
 
 function chainGenres(all: readonly GenrePreset[], genre: GenrePreset) {
@@ -348,7 +373,7 @@ export function buildContext(settings: Settings, data: DataBundle, game: GameDat
   const coinedLetters: readonly [number, number] | undefined = style?.brandLetters ?? (toneMax ? [3, toneMax] : undefined);
   const profile = data.profiles.find(p => p.id === profileId) ?? data.profiles.find(p => p.id === 'neutral');
   if (!profile) throw new Error('The neutral phonetic profile is required');
-  const coinedRate = Math.min(1, (style?.coinedRate ?? 0.2) * myth.coinedRate);
+  const coinedRate = Math.min(1, (style?.coinedRate ?? params.coinedCap) * myth.coinedRate);
   const coinedCap = style?.id === 'invented' ? 1 : Math.min(1, Math.max(params.coinedCap, style?.coinedRate ?? 0) * myth.coinedRate);
   const alliterationBonus = tones.reduce((n, t) => n + (t.def.alliterationBonus ?? 0) * t.weight, 0);
 
@@ -496,7 +521,8 @@ export function buildContext(settings: Settings, data: DataBundle, game: GameDat
     if (t.rare) w *= params.rareTemplateBoost;
     return w * lengthWeight(t, settings.length, genre.lengthBias);
   };
-  const templates = game.templates.map(t => ({ item: t, weight: templateWeight(t) })).filter(x => x.weight > 0);
+  const weighted = game.templates.map(t => ({ item: t, weight: templateWeight(t) })).filter(x => x.weight > 0);
+  const templates = settings.creativity === 'focused' ? narrowTemplates(weighted) : weighted;
 
   const anchors = [...boost.entries()].filter(([, b]) => b > 1).map(([c, b]) => ({ item: c, weight: b * (userConcepts.has(c) ? 2 : 1) }));
   return finish(pools, flatPools, vocab, templates, anchors);

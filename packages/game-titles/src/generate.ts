@@ -35,7 +35,7 @@ export function selectionOptions(ctx: Context, count: number): SelectOptions {
       if (k === 'cliche-any') return atLeastOne(count * 0.2);
       if (k.startsWith('phrase:')) return phrases > 1 ? atLeastOne(count * 0.3) : count;
       if (k === 'literal') return Math.max(1, Math.round(count * ctx.params.literalRate));
-      if (k === 'coined') return Math.max(1, Math.ceil(count * ctx.coinedCap));
+      if (k === 'coined') return atLeastOne(count * ctx.coinedCap);
       if (k === 'symbolic') return 2;
       return Infinity;
     },

@@ -142,7 +142,7 @@ test('invented words stay within the batch cap for every creativity level', () =
   const caps = { focused: 0.1, balanced: 0.2, wild: 0.35 } as const;
   for (const creativity of ['focused', 'balanced', 'wild'] as const) {
     for (const count of [5, 10, 20] as const) {
-      const limit = Math.max(1, Math.ceil(count * caps[creativity]));
+      const limit = Math.max(1, Math.floor(count * caps[creativity]));
       for (let i = 0; i < 20; i++) {
         const titles = run({ creativity, count }, `cn${i}`).titles;
         const coined = titles.filter(t => flattenParts(t.recipe.parts).some(p => p.kind === 'coined')).length;
@@ -178,4 +178,21 @@ test('a note lists a concept only when a word in the title carries it or the use
       for (const c of t.meta.concepts) assert.ok(carried.has(c), `${t.title}: ${c} is not carried by ${[...carried]}`);
     }
   }
+});
+
+test('the invented-word share rises with the creativity level and stays within its cap', () => {
+  const caps = { focused: 0.1, balanced: 0.2, wild: 0.35 } as const;
+  const mean = {} as Record<keyof typeof caps, number>;
+  for (const creativity of ['focused', 'balanced', 'wild'] as const) {
+    let coined = 0;
+    let total = 0;
+    for (let i = 0; i < 20; i++) {
+      const titles = run({ creativity, count: 20 }, `inv${i}`).titles;
+      total += titles.length;
+      coined += titles.filter(t => flattenParts(t.recipe.parts).some(p => p.kind === 'coined')).length;
+    }
+    mean[creativity] = coined / total;
+    assert.ok(mean[creativity] <= caps[creativity], `${creativity}: mean ${mean[creativity].toFixed(3)} above ${caps[creativity]}`);
+  }
+  assert.ok(mean.wild > mean.balanced && mean.balanced > mean.focused, JSON.stringify(mean));
 });

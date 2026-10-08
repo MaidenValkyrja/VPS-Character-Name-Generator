@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { compileAvoid, createRng, parseAvoid, prepareAvoidText, violatesAvoid } from '@vps-name-tools/core';
-import { buildContext, normalizeSettings, type Context, type Settings } from '../src/index';
+import { buildContext, narrowTemplates, normalizeSettings, type Context, type Settings, type Template } from '../src/index';
 import { MINI } from '../../data/test/fixtures/mini-bundle';
 import { MINI_GAME } from './fixtures/mini-game';
 
@@ -309,4 +309,73 @@ test('a blocked context is cheap but fully defined', () => {
   for (const f of [c.flatPools, c.vocab, c.anchors, c.avoid, c.boost, c.entryById, c.related]) assert.ok(f);
   assert.equal(typeof c.entryRelevance(MINI.lexicon[0]), 'number');
   assert.equal(c.conceptLabel('fire'), 'fire');
+});
+
+// ---- Fix round 1: Focused narrows the templates; creativity scales the invented-word rate ----
+
+const families = (c: Context) => new Set(c.templates.map(t => t.item.family));
+const order = (id: string) => MINI_GAME.templates.findIndex(t => t.id === id);
+
+test('Focused keeps only the highest-weighted templates', () => {
+  const focused = ctx({ creativity: 'focused' });
+  const balanced = ctx({ creativity: 'balanced' });
+  assert.ok(focused.templates.length < balanced.templates.length, `${focused.templates.length} vs ${balanced.templates.length}`);
+  assert.ok(focused.templates.length >= 8);
+  assert.ok(families(focused).size >= 4);
+  const kept = new Set(focused.templates.map(t => t.item.id));
+  const top = [...balanced.templates].sort((a, b) => b.weight - a.weight)[0];
+  assert.ok(kept.has(top.item.id), 'the heaviest template stays');
+  assert.ok(focused.templates.every((t, i, all) => i === 0 || order(all[i - 1].item.id) < order(t.item.id)), 'template order is kept');
+  assert.equal(ctx({ creativity: 'wild' }).templates.length, balanced.templates.length);
+});
+
+const synthetic = (weights: readonly number[], family: (i: number) => string) =>
+  weights.map((weight, i) => ({ item: { id: `S${i}`, family: family(i) } as unknown as Template, weight }));
+
+test('narrowTemplates keeps the shortest prefix that covers 80% of the weight', () => {
+  const all = synthetic([10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10], i => `f${i % 5}`);
+  assert.equal(narrowTemplates(all).length, 16);
+  // Weight order, not list order, decides what is kept; the list order is preserved.
+  const skew = synthetic([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 30, 30, 30, 30], i => `f${i % 5}`);
+  const kept = narrowTemplates(skew).map(t => t.item.id);
+  assert.deepEqual(kept.slice(-4), ['S10', 'S11', 'S12', 'S13']);
+  assert.equal(kept.length, 8);
+});
+
+test('narrowTemplates never keeps fewer than 8 templates or 4 families', () => {
+  const heavyTop = synthetic([1000, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], i => `f${i % 6}`);
+  assert.equal(narrowTemplates(heavyTop).length, 8);
+  // Eight templates of one family are not enough: the prefix runs on until four families are in.
+  const oneFamily = synthetic([50, 40, 30, 20, 15, 12, 10, 8, 6, 4, 2, 1], i => (i < 9 ? 'a' : ['b', 'c', 'd'][i - 9]));
+  const kept = narrowTemplates(oneFamily);
+  assert.equal(new Set(kept.map(t => t.item.family)).size, 4);
+  assert.equal(kept.length, 12);
+  // Fewer templates than the floor, or fewer families than the floor: everything stays.
+  const few = synthetic([5, 4, 3], i => `f${i}`);
+  assert.equal(narrowTemplates(few).length, 3);
+  const twoFamilies = synthetic([9, 8, 7, 6, 5, 4, 3, 2, 1, 1], i => `f${i % 2}`);
+  assert.equal(narrowTemplates(twoFamilies).length, 10);
+  assert.deepEqual(narrowTemplates([]), []);
+});
+
+test('a style that narrows the families still keeps its floors under Focused', () => {
+  for (const style of ['compound', 'short-punchy', 'brandable'] as const) {
+    const balanced = ctx({ creativity: 'balanced', style });
+    const focused = ctx({ creativity: 'focused', style });
+    assert.ok(focused.templates.length >= Math.min(8, balanced.templates.length), `${style}: ${focused.templates.length} of ${balanced.templates.length}`);
+    assert.ok(families(focused).size >= Math.min(4, families(balanced).size), style);
+    assert.ok(focused.templates.length <= balanced.templates.length);
+  }
+});
+
+test('Focused narrowing never empties a context that has templates', () => {
+  for (const patch of [{ length: 'one' as const }, { include: 'Aeternum' }, { style: 'invented' as const }]) {
+    assert.ok(ctx({ ...patch, creativity: 'focused' }).templates.length > 0, JSON.stringify(patch));
+  }
+});
+
+test('the invented-word rate follows the creativity level unless the style sets it', () => {
+  assert.deepEqual(['focused', 'balanced', 'wild'].map(creativity => ctx({ creativity: creativity as Settings['creativity'] }).coinedRate), [0.1, 0.2, 0.35]);
+  const brandable = ['focused', 'balanced', 'wild'].map(creativity => ctx({ creativity: creativity as Settings['creativity'], style: 'brandable' }).coinedRate);
+  assert.deepEqual(brandable, [0.6, 0.6, 0.6]);
 });
